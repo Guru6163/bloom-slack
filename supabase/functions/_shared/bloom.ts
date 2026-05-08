@@ -27,15 +27,12 @@ export async function validateKey(apiKey: string): Promise<boolean> {
 
 export async function listBrands(apiKey: string): Promise<unknown[]> {
   const data = await fetchBloom('/brands?limit=50', apiKey) as Record<string, unknown>;
-  const d = data?.data as Record<string, unknown> | undefined;
-  if (Array.isArray(d?.brands)) return d.brands as unknown[];
-  if (Array.isArray(d)) return d as unknown[];
-  if (Array.isArray(data)) return data as unknown[];
-  return [];
+  return extractCollection(data, 'brands');
 }
 
 export async function getBrand(apiKey: string, brandId: string): Promise<unknown> {
-  return fetchBloom(`/brands/${brandId}`, apiKey);
+  const data = await fetchBloom(`/brands/${brandId}`, apiKey) as Record<string, unknown>;
+  return extractEntity(data);
 }
 
 export async function listImages(apiKey: string, limit = 10): Promise<unknown[]> {
@@ -45,20 +42,12 @@ export async function listImages(apiKey: string, limit = 10): Promise<unknown[]>
     includeUrls: 'true',
   });
   const data = await fetchBloom(`/images?${params.toString()}`, apiKey) as Record<string, unknown>;
-  const d = data?.data as Record<string, unknown> | undefined;
-  if (Array.isArray(d?.images)) return d.images as unknown[];
-  if (Array.isArray(d)) return d as unknown[];
-  if (Array.isArray(data)) return data as unknown[];
-  return [];
+  return extractCollection(data, 'images');
 }
 
 export async function getImage(apiKey: string, imageId: string): Promise<unknown | null> {
-  const params = new URLSearchParams({
-    ids: imageId,
-    includeUrls: 'true',
-  });
-  const images = await listImagesByQuery(apiKey, params);
-  return images[0] ?? null;
+  const data = await fetchBloom(`/images/${imageId}`, apiKey) as Record<string, unknown>;
+  return extractEntity(data);
 }
 
 export function resolveBrandSessionId(brand: Record<string, unknown>): string {
@@ -115,11 +104,34 @@ export function getImageUrl(image: Record<string, unknown>): string {
   return url;
 }
 
-export async function editImage(apiKey: string, imageId: string, instruction: string): Promise<unknown> {
+export async function editImage(
+  apiKey: string,
+  imageId: string,
+  instruction: string,
+  brandSessionId?: string,
+): Promise<unknown> {
   return fetchBloom(`/images/${imageId}/edit`, apiKey, {
     method: 'POST',
-    body: JSON.stringify({ instruction }),
+    body: JSON.stringify({
+      prompt: instruction,
+      ...(brandSessionId ? { brandSessionId } : {}),
+    }),
   });
+}
+
+export async function getCredits(apiKey: string): Promise<{ balance: number | null; unlimited: boolean | null }> {
+  const data = await fetchBloom('/credits', apiKey) as Record<string, unknown>;
+  const entity = extractEntity(data);
+  const record = entity && typeof entity === 'object' ? entity as Record<string, unknown> : {};
+  return {
+    balance: toNumberOrNull(record.balance),
+    unlimited: toBooleanOrNull(record.unlimited),
+  };
+}
+
+export async function listWorkspaces(apiKey: string): Promise<unknown[]> {
+  const data = await fetchBloom('/workspaces', apiKey) as Record<string, unknown>;
+  return extractCollection(data, 'workspaces');
 }
 
 async function listImagesByQuery(
@@ -128,10 +140,8 @@ async function listImagesByQuery(
   throwOnInvalid = false,
 ): Promise<unknown[]> {
   const data = await fetchBloom(`/images?${params.toString()}`, apiKey) as Record<string, unknown>;
-  const d = data?.data as Record<string, unknown> | undefined;
-  if (Array.isArray(d?.images)) return d.images as unknown[];
-  if (Array.isArray(d)) return d as unknown[];
-  if (Array.isArray(data)) return data as unknown[];
+  const images = extractCollection(data, 'images');
+  if (images.length > 0) return images;
   if (throwOnInvalid) throw new Error('Invalid images response');
   return [];
 }
@@ -189,4 +199,33 @@ function resolveCreatedAt(image: Record<string, unknown>): number {
   const raw = image.createdAt ?? image.created_at ?? image.updatedAt ?? image.updated_at;
   const parsed = typeof raw === 'string' ? Date.parse(raw) : Number(raw);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function extractCollection(payload: Record<string, unknown>, key: string): unknown[] {
+  const data = payload?.data;
+  if (data && typeof data === 'object') {
+    const record = data as Record<string, unknown>;
+    if (Array.isArray(record[key])) return record[key] as unknown[];
+    if (Array.isArray(data)) return data as unknown[];
+    return [];
+  }
+  if (Array.isArray(payload[key])) return payload[key] as unknown[];
+  if (Array.isArray(payload)) return payload as unknown[];
+  return [];
+}
+
+function extractEntity(payload: Record<string, unknown>): unknown | null {
+  const data = payload?.data;
+  if (data && typeof data === 'object') return data;
+  if (payload && typeof payload === 'object') return payload;
+  return null;
+}
+
+function toNumberOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toBooleanOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
 }

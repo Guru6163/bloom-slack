@@ -1,6 +1,16 @@
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { getWorkspaceConfig, createJob, saveWorkspaceConfig, updateJob } from '../_shared/db.ts';
-import { getBrand, getImage, getImageUrl, listBrands, listImages, resolveBrandSessionId, validateKey } from '../_shared/bloom.ts';
+import {
+  getBrand,
+  getCredits,
+  getImage,
+  getImageUrl,
+  listBrands,
+  listImages,
+  listWorkspaces,
+  resolveBrandSessionId,
+  validateKey,
+} from '../_shared/bloom.ts';
 import { postMessage, buildLoadingBlocks, buildHelpBlocks } from '../_shared/slack.ts';
 import { parseCommand } from '../_shared/utils.ts';
 
@@ -102,8 +112,10 @@ async function handleSlashCommand(payload: {
     let selectedBrand: Record<string, unknown> | null = null;
     if (requestedBrandId) {
       try {
-        const brandResponse = await getBrand(apiKey, requestedBrandId) as Record<string, unknown>;
-        selectedBrand = extractBrandRecord(brandResponse);
+        const brandResponse = await getBrand(apiKey, requestedBrandId);
+        selectedBrand = brandResponse && typeof brandResponse === 'object'
+          ? brandResponse as Record<string, unknown>
+          : null;
       } catch {
         selectedBrand = null;
       }
@@ -173,8 +185,10 @@ async function handleSlashCommand(payload: {
   if (parsed.action === 'brand') {
     if (parsed.entityId) {
       try {
-        const brandResponse = await getBrand(config.bloom_api_key, parsed.entityId) as Record<string, unknown>;
-        const brand = extractBrandRecord(brandResponse);
+        const brandResponse = await getBrand(config.bloom_api_key, parsed.entityId);
+        const brand = brandResponse && typeof brandResponse === 'object'
+          ? brandResponse as Record<string, unknown>
+          : null;
         if (!brand) throw new Error('Brand not found');
         const brandId = String(brand.id ?? brand.brandId ?? brand.brand_id ?? parsed.entityId);
         const brandName = String(brand.name ?? brand.brandName ?? brand.brand_name ?? 'Unknown');
@@ -291,6 +305,54 @@ async function handleSlashCommand(payload: {
     }
   }
 
+  // CREDITS
+  if (parsed.action === 'credits') {
+    try {
+      const credits = await getCredits(config.bloom_api_key);
+      return slackResponse({
+        response_type: 'ephemeral',
+        text:
+          '*Bloom Credits*\n' +
+          `Balance: ${credits.balance ?? 'N/A'}\n` +
+          `Unlimited: ${credits.unlimited === null ? 'N/A' : credits.unlimited ? 'Yes' : 'No'}`,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to fetch credits';
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: `❌ ${message}`,
+      });
+    }
+  }
+
+  // WORKSPACES
+  if (parsed.action === 'workspaces') {
+    try {
+      const workspaces = await listWorkspaces(config.bloom_api_key);
+      const lines = workspaces
+        .filter((item) => !!item && typeof item === 'object')
+        .slice(0, 30)
+        .map((item) => {
+          const workspace = item as Record<string, unknown>;
+          const id = String(workspace.id ?? 'personal');
+          const name = String(workspace.name ?? 'Personal');
+          return `• ${name} (\`${id}\`)`;
+        });
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: lines.length
+          ? `*Bloom Workspaces (${lines.length})*\n${lines.join('\n')}`
+          : 'No workspaces found.',
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to list workspaces';
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: `❌ ${message}`,
+      });
+    }
+  }
+
   // GENERATE
   if (parsed.action === 'generate') {
     if (!parsed.prompt) {
@@ -335,15 +397,6 @@ async function handleSlashCommand(payload: {
   }
 
   return new Response('', { status: 200 });
-}
-
-function extractBrandRecord(input: Record<string, unknown>): Record<string, unknown> | null {
-  const data = input?.data;
-  if (data && typeof data === 'object') {
-    const maybeBrand = (data as Record<string, unknown>).brand;
-    if (maybeBrand && typeof maybeBrand === 'object') return maybeBrand as Record<string, unknown>;
-  }
-  return input;
 }
 
 function formatImageSummary(image: Record<string, unknown>): string {

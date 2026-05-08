@@ -1,5 +1,5 @@
 export interface ParsedCommand {
-  action: 'generate' | 'setup' | 'brand' | 'brands' | 'images' | 'image' | 'help' | 'unknown';
+  action: 'generate' | 'setup' | 'brand' | 'brands' | 'images' | 'image' | 'credits' | 'workspaces' | 'help' | 'unknown';
   prompt: string;
   aspectRatio: string;
   variants: number;
@@ -37,6 +37,12 @@ export function parseCommand(text: string): ParsedCommand {
   }
   if (lower === 'brands') {
     return { ...defaultParsed, action: 'brands' };
+  }
+  if (lower === 'credits') {
+    return { ...defaultParsed, action: 'credits' };
+  }
+  if (lower === 'workspaces') {
+    return { ...defaultParsed, action: 'workspaces' };
   }
   if (lower === 'images') {
     return { ...defaultParsed, action: 'images', limit: 10 };
