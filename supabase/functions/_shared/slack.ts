@@ -36,6 +36,22 @@ export async function postMessage(
   });
 }
 
+export function buildRequestBlocks(prompt: string, ratio: string, userId: string): unknown[] {
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `👤 <@${userId}> requested a Bloom generation\n*Prompt:* ${prompt}\n*Ratio:* ${ratio}`,
+      },
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: 'Bot updates and results will appear in this thread.' }],
+    },
+  ];
+}
+
 export function buildLoadingBlocks(prompt: string, ratio: string, userId: string): unknown[] {
   return [
     {

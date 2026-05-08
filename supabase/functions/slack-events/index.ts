@@ -11,7 +11,7 @@ import {
   resolveBrandSessionId,
   validateKey,
 } from '../_shared/bloom.ts';
-import { postMessage, buildLoadingBlocks, buildHelpBlocks } from '../_shared/slack.ts';
+import { postMessage, buildLoadingBlocks, buildHelpBlocks, buildRequestBlocks } from '../_shared/slack.ts';
 import { parseCommand } from '../_shared/utils.ts';
 
 serve(async (req: Request) => {
@@ -193,26 +193,26 @@ async function handleSlashCommand(payload: {
         const brandId = String(brand.id ?? brand.brandId ?? brand.brand_id ?? parsed.entityId);
         const brandName = String(brand.name ?? brand.brandName ?? brand.brand_name ?? 'Unknown');
         const brandSessionId = resolveBrandSessionId(brand);
-        return slackResponse({
-          response_type: 'ephemeral',
-          text:
-            `*Brand:* ${brandName}\n` +
-            `*Brand ID:* \`${brandId}\`\n` +
-            `*Session ID:* \`${brandSessionId || 'N/A'}\``,
-        });
+        return await postCommandResponse(
+          config.bot_token,
+          channelId,
+          userId,
+          text,
+          `*Brand:* ${brandName}\n*Brand ID:* \`${brandId}\`\n*Session ID:* \`${brandSessionId || 'N/A'}\``,
+        );
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Unable to fetch brand';
-        return slackResponse({
-          response_type: 'ephemeral',
-          text: `❌ ${message}`,
-        });
+        return await postCommandResponse(config.bot_token, channelId, userId, text, `❌ ${message}`);
       }
     }
 
-    return slackResponse({
-      response_type: 'ephemeral',
-      text: `*Current Brand:* ${config.brand_name || 'Unknown'}\n*Brand ID:* \`${config.brand_id}\``,
-    });
+    return await postCommandResponse(
+      config.bot_token,
+      channelId,
+      userId,
+      text,
+      `*Current Brand:* ${config.brand_name || 'Unknown'}\n*Brand ID:* \`${config.brand_id}\``,
+    );
   }
 
   // BRANDS
@@ -228,18 +228,18 @@ async function handleSlashCommand(payload: {
           const name = String(brand.name ?? brand.brandName ?? brand.brand_name ?? 'Unknown');
           return `• ${name} (\`${id || 'N/A'}\`)`;
         });
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: lines.length
+      return await postCommandResponse(
+        config.bot_token,
+        channelId,
+        userId,
+        text,
+        lines.length
           ? `*Available Bloom Brands (${lines.length})*\n${lines.join('\n')}`
           : 'No brands found in your Bloom account.',
-      });
+      );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to list brands';
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: `❌ ${message}`,
-      });
+      return await postCommandResponse(config.bot_token, channelId, userId, text, `❌ ${message}`);
     }
   }
 
@@ -251,57 +251,53 @@ async function handleSlashCommand(payload: {
         .filter((item) => !!item && typeof item === 'object')
         .slice(0, 25)
         .map((item) => formatImageSummary(item as Record<string, unknown>));
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: lines.length
+      return await postCommandResponse(
+        config.bot_token,
+        channelId,
+        userId,
+        text,
+        lines.length
           ? `*Recent Bloom Images (${lines.length})*\n${lines.join('\n')}`
           : 'No images found in your Bloom account.',
-      });
+      );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to list images';
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: `❌ ${message}`,
-      });
+      return await postCommandResponse(config.bot_token, channelId, userId, text, `❌ ${message}`);
     }
   }
 
   // IMAGE
   if (parsed.action === 'image') {
     if (!parsed.entityId) {
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: 'Usage: `/bloom-gen image <image_id>`',
-      });
+      return await postCommandResponse(config.bot_token, channelId, userId, text, 'Usage: `/bloom-gen image <image_id>`');
     }
 
     try {
       const image = await getImage(config.bloom_api_key, parsed.entityId);
       if (!image || typeof image !== 'object') {
-        return slackResponse({
-          response_type: 'ephemeral',
-          text: `Image not found for ID \`${parsed.entityId}\`.`,
-        });
+        return await postCommandResponse(
+          config.bot_token,
+          channelId,
+          userId,
+          text,
+          `Image not found for ID \`${parsed.entityId}\`.`,
+        );
       }
       const img = image as Record<string, unknown>;
       const url = getImageUrl(img);
       const id = String(img.id ?? img.imageId ?? parsed.entityId);
       const status = String(img.status ?? 'unknown');
       const prompt = String(img.prompt ?? img.originalPrompt ?? '').trim();
-      return slackResponse({
-        response_type: 'ephemeral',
-        text:
-          `*Image ID:* \`${id}\`\n` +
-          `*Status:* ${status}\n` +
-          `${prompt ? `*Prompt:* ${prompt}\n` : ''}` +
-          `${url ? `*URL:* ${url}` : '*URL:* Not available yet'}`,
-      });
+      return await postCommandResponse(
+        config.bot_token,
+        channelId,
+        userId,
+        text,
+        `*Image ID:* \`${id}\`\n*Status:* ${status}\n${prompt ? `*Prompt:* ${prompt}\n` : ''}${url ? `*URL:* ${url}` : '*URL:* Not available yet'}`,
+      );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to fetch image';
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: `❌ ${message}`,
-      });
+      return await postCommandResponse(config.bot_token, channelId, userId, text, `❌ ${message}`);
     }
   }
 
@@ -309,19 +305,16 @@ async function handleSlashCommand(payload: {
   if (parsed.action === 'credits') {
     try {
       const credits = await getCredits(config.bloom_api_key);
-      return slackResponse({
-        response_type: 'ephemeral',
-        text:
-          '*Bloom Credits*\n' +
-          `Balance: ${credits.balance ?? 'N/A'}\n` +
-          `Unlimited: ${credits.unlimited === null ? 'N/A' : credits.unlimited ? 'Yes' : 'No'}`,
-      });
+      return await postCommandResponse(
+        config.bot_token,
+        channelId,
+        userId,
+        text,
+        `*Bloom Credits*\nBalance: ${credits.balance ?? 'N/A'}\nUnlimited: ${credits.unlimited === null ? 'N/A' : credits.unlimited ? 'Yes' : 'No'}`,
+      );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to fetch credits';
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: `❌ ${message}`,
-      });
+      return await postCommandResponse(config.bot_token, channelId, userId, text, `❌ ${message}`);
     }
   }
 
@@ -338,18 +331,18 @@ async function handleSlashCommand(payload: {
           const name = String(workspace.name ?? 'Personal');
           return `• ${name} (\`${id}\`)`;
         });
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: lines.length
+      return await postCommandResponse(
+        config.bot_token,
+        channelId,
+        userId,
+        text,
+        lines.length
           ? `*Bloom Workspaces (${lines.length})*\n${lines.join('\n')}`
           : 'No workspaces found.',
-      });
+      );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to list workspaces';
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: `❌ ${message}`,
-      });
+      return await postCommandResponse(config.bot_token, channelId, userId, text, `❌ ${message}`);
     }
   }
 
@@ -362,12 +355,22 @@ async function handleSlashCommand(payload: {
       });
     }
 
-    // Post loading message immediately
+    // Post a visible request message first, then keep bot updates in that thread.
+    const requestMsg = await postMessage(
+      config.bot_token,
+      channelId,
+      buildRequestBlocks(parsed.prompt, parsed.aspectRatio, userId),
+    );
+    const requestTs = String(requestMsg.ts ?? '');
+
+    // Post loading message in thread
     const loadingMsg = await postMessage(
       config.bot_token,
       channelId,
-      buildLoadingBlocks(parsed.prompt, parsed.aspectRatio, userId)
+      buildLoadingBlocks(parsed.prompt, parsed.aspectRatio, userId),
+      requestTs || undefined,
     );
+    const loadingTs = String(loadingMsg.ts ?? '');
 
     // Create job
     const jobId = await createJob({
@@ -379,7 +382,7 @@ async function handleSlashCommand(payload: {
       variants: parsed.variants,
     });
 
-    await updateJob(jobId, { message_ts: loadingMsg.ts, status: 'generating' });
+    await updateJob(jobId, { message_ts: loadingTs || requestTs, status: 'generating' });
 
     // Fire and forget — invoke run-generation
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -406,6 +409,40 @@ function formatImageSummary(image: Record<string, unknown>): string {
   const prompt = String(image.prompt ?? image.originalPrompt ?? '').trim();
   const clippedPrompt = prompt.length > 72 ? `${prompt.slice(0, 69)}...` : prompt;
   return `• \`${id}\` · ${status}${clippedPrompt ? ` · ${clippedPrompt}` : ''}${url ? `\n  ${url}` : ''}`;
+}
+
+async function postCommandResponse(
+  botToken: string,
+  channelId: string,
+  userId: string,
+  rawText: string,
+  responseText: string,
+): Promise<Response> {
+  const command = `/bloom-gen ${rawText}`.trim();
+  const parent = await postMessage(botToken, channelId, [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `👤 <@${userId}> ran \`${command}\``,
+      },
+    },
+  ]);
+
+  const parentTs = String(parent.ts ?? '');
+  await postMessage(
+    botToken,
+    channelId,
+    [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: responseText },
+      },
+    ],
+    parentTs || undefined,
+  );
+
+  return new Response('', { status: 200 });
 }
 
 async function handleInteractiveAction(data: any): Promise<Response> {
