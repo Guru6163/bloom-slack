@@ -36,6 +36,8 @@ export async function postMessage(
   });
 }
 
+type ProgressStage = 'queued' | 'generating' | 'finalizing' | 'done';
+
 export function buildRequestBlocks(prompt: string, ratio: string, userId: string): unknown[] {
   return [
     {
@@ -53,20 +55,55 @@ export function buildRequestBlocks(prompt: string, ratio: string, userId: string
 }
 
 export function buildLoadingBlocks(prompt: string, ratio: string, userId: string): unknown[] {
-  return [
+  return buildProgressBlocks(prompt, ratio, userId, 'queued');
+}
+
+export function buildProgressBlocks(
+  prompt: string,
+  ratio: string,
+  userId: string,
+  stage: ProgressStage,
+  templates: string[] = [],
+): unknown[] {
+  const status = {
+    queued: '⏳',
+    generating: '🔄',
+    finalizing: '🧩',
+    done: '✅',
+  };
+  const stageLine = [
+    `${stage === 'queued' ? '🟢' : '⚪'} Queued`,
+    `${stage === 'generating' ? '🟢' : stage === 'queued' ? '⚪' : '⚪'} Generating variants`,
+    `${stage === 'finalizing' ? '🟢' : (stage === 'done' ? '⚪' : '⚪')} Finalizing assets`,
+    `${stage === 'done' ? '🟢' : '⚪'} Done`,
+  ].join('  •  ');
+
+  const blocks: unknown[] = [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
         text:
-          `🌸 *Generating your image...*\n\n*Prompt:* ${prompt}\n*Ratio:* ${ratio}\n*Requested by:* <@${userId}>`,
+          `${status[stage]} *Bloom generation in progress*\n\n*Prompt:* ${prompt}\n*Ratio:* ${ratio}\n*Requested by:* <@${userId}>`,
       },
     },
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '⏳ Usually takes 10–30 seconds...' }],
+      elements: [{ type: 'mrkdwn', text: stageLine }],
     },
   ];
+
+  if (templates.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Top winning prompts in this workspace:*\n${templates.map((t) => `• ${t}`).join('\n')}`,
+      },
+    });
+  }
+
+  return blocks;
 }
 
 export function buildResultBlocks(
@@ -115,12 +152,6 @@ export function buildResultBlocks(
           : []),
         {
           type: 'button',
-          text: { type: 'plain_text', text: '✏️ Edit' },
-          value: JSON.stringify({ jobId, imageIndex: currentIndex }),
-          action_id: 'bloom_open_edit_modal',
-        },
-        {
-          type: 'button',
           text: { type: 'plain_text', text: '🔄 Regenerate' },
           value: JSON.stringify({ jobId }),
           action_id: 'bloom_regenerate',
@@ -131,6 +162,52 @@ export function buildResultBlocks(
           url: currentUrl,
           action_id: 'bloom_download',
           style: 'primary',
+        },
+      ],
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '💎 More premium' },
+          value: JSON.stringify({ jobId, imageIndex: currentIndex, intent: 'premium' }),
+          action_id: 'bloom_apply_intent',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '☀️ Brighter' },
+          value: JSON.stringify({ jobId, imageIndex: currentIndex, intent: 'brighter' }),
+          action_id: 'bloom_apply_intent',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '📦 Product-focused' },
+          value: JSON.stringify({ jobId, imageIndex: currentIndex, intent: 'product' }),
+          action_id: 'bloom_apply_intent',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🎄 Holiday mood' },
+          value: JSON.stringify({ jobId, imageIndex: currentIndex, intent: 'holiday' }),
+          action_id: 'bloom_apply_intent',
+        },
+      ],
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '👍' },
+          value: JSON.stringify({ jobId, imageIndex: currentIndex, score: 1 }),
+          action_id: 'bloom_feedback',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '👎' },
+          value: JSON.stringify({ jobId, imageIndex: currentIndex, score: -1 }),
+          action_id: 'bloom_feedback',
         },
       ],
     },

@@ -1,5 +1,13 @@
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
-import { getWorkspaceConfig, createJob, saveWorkspaceConfig, updateJob } from '../_shared/db.ts';
+import {
+  createJob,
+  getJob,
+  getWorkspaceConfig,
+  recordImageFeedback,
+  saveWorkspaceConfig,
+  updateJob,
+  upsertPromptTemplate,
+} from '../_shared/db.ts';
 import {
   getBrand,
   getCredits,
@@ -11,7 +19,12 @@ import {
   resolveBrandSessionId,
   validateKey,
 } from '../_shared/bloom.ts';
-import { postMessage, buildLoadingBlocks, buildHelpBlocks, buildRequestBlocks } from '../_shared/slack.ts';
+import {
+  buildHelpBlocks,
+  buildResultBlocks,
+  postMessage,
+  slackApi,
+} from '../_shared/slack.ts';
 import { parseCommand } from '../_shared/utils.ts';
 
 serve(async (req: Request) => {
@@ -355,24 +368,7 @@ async function handleSlashCommand(payload: {
       });
     }
 
-    // Post a visible request message first, then keep bot updates in that thread.
-    const requestMsg = await postMessage(
-      config.bot_token,
-      channelId,
-      buildRequestBlocks(parsed.prompt, parsed.aspectRatio, userId),
-    );
-    const requestTs = String(requestMsg.ts ?? '');
-
-    // Post loading message in thread
-    const loadingMsg = await postMessage(
-      config.bot_token,
-      channelId,
-      buildLoadingBlocks(parsed.prompt, parsed.aspectRatio, userId),
-      requestTs || undefined,
-    );
-    const loadingTs = String(loadingMsg.ts ?? '');
-
-    // Create job
+    // Create job quickly, then let run-generation post progress/results.
     const jobId = await createJob({
       team_id: teamId,
       channel_id: channelId,
@@ -380,9 +376,17 @@ async function handleSlashCommand(payload: {
       prompt: parsed.prompt,
       aspect_ratio: parsed.aspectRatio,
       variants: parsed.variants,
+      brand_id: config.brand_id,
     });
 
-    await updateJob(jobId, { message_ts: loadingTs || requestTs, status: 'generating' });
+    await updateJob(jobId, { status: 'generating' });
+    await upsertPromptTemplate({
+      team_id: teamId,
+      brand_id: config.brand_id,
+      prompt: parsed.prompt,
+      aspect_ratio: parsed.aspectRatio,
+      variants: parsed.variants,
+    });
 
     // Fire and forget — invoke run-generation
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -396,7 +400,10 @@ async function handleSlashCommand(payload: {
       body: JSON.stringify({ jobId }),
     }); // intentionally not awaited
 
-    return new Response('', { status: 200 });
+    return slackResponse({
+      response_type: 'ephemeral',
+      text: '🌸 Queued! Generating variants now - updates will appear in channel shortly.',
+    });
   }
 
   return new Response('', { status: 200 });
@@ -453,10 +460,6 @@ async function handleInteractiveAction(data: any): Promise<Response> {
   const value = JSON.parse(action.value || '{}');
   const teamId = data.team?.id;
 
-  const { getJob, updateJob } = await import('../_shared/db.ts');
-  const { buildResultBlocks } = await import('../_shared/slack.ts');
-  const { slackApi } = await import('../_shared/slack.ts');
-
   const config = await getWorkspaceConfig(teamId);
   const job = await getJob(value.jobId);
   if (!config || !job) return new Response('OK', { status: 200 });
@@ -472,7 +475,6 @@ async function handleInteractiveAction(data: any): Promise<Response> {
   }
 
   if (actionId === 'bloom_regenerate') {
-    const { createJob } = await import('../_shared/db.ts');
     const newJobId = await createJob({
       team_id: teamId,
       channel_id: job.channel_id,
@@ -480,6 +482,7 @@ async function handleInteractiveAction(data: any): Promise<Response> {
       prompt: job.prompt,
       aspect_ratio: job.aspect_ratio,
       variants: job.variants,
+      brand_id: job.brand_id ?? config.brand_id,
     });
     await updateJob(newJobId, { message_ts: job.message_ts, status: 'generating' });
 
@@ -492,6 +495,78 @@ async function handleInteractiveAction(data: any): Promise<Response> {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ jobId: newJobId }),
+    });
+  }
+
+  if (actionId === 'bloom_apply_intent') {
+    const currentIds = (job.image_ids as string[] | null) ?? [];
+    const idx = Number(value.imageIndex ?? 0);
+    const baseImageId = String(currentIds[idx] ?? '');
+    if (!baseImageId) return new Response('', { status: 200 });
+
+    const newJobId = await createJob({
+      team_id: teamId,
+      channel_id: job.channel_id,
+      user_id: job.user_id,
+      prompt: job.prompt,
+      aspect_ratio: job.aspect_ratio,
+      variants: job.variants,
+      brand_id: job.brand_id ?? config.brand_id,
+      source_image_id: baseImageId,
+      intent: String(value.intent ?? ''),
+    });
+    await updateJob(newJobId, {
+      message_ts: job.message_ts,
+      status: 'generating',
+      image_ids: job.image_ids,
+      image_urls: job.image_urls,
+    });
+
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    fetch(`${supabaseUrl}/functions/v1/run-generation`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${serviceKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        jobId: newJobId,
+        intent: String(value.intent ?? ''),
+        imageIndex: idx,
+        baseImageId,
+      }),
+    });
+  }
+
+  if (actionId === 'bloom_feedback') {
+    const score = Number(value.score ?? 0) >= 0 ? 1 : -1;
+    const idx = Math.max(0, Number(value.imageIndex ?? 0));
+    const userId = String(data.user?.id ?? job.user_id ?? '');
+    await recordImageFeedback({
+      team_id: String(job.team_id ?? teamId),
+      brand_id: String(job.brand_id ?? config.brand_id ?? ''),
+      job_id: String(value.jobId),
+      image_index: idx,
+      user_id: userId,
+      score: score as -1 | 1,
+    });
+
+    if (score > 0) {
+      await upsertPromptTemplate({
+        team_id: String(job.team_id ?? teamId),
+        brand_id: String(job.brand_id ?? config.brand_id ?? ''),
+        prompt: String(job.prompt ?? ''),
+        aspect_ratio: String(job.aspect_ratio ?? '16:9'),
+        variants: Number(job.variants ?? 2),
+        won: true,
+      });
+    }
+
+    await slackApi('chat.postEphemeral', config.bot_token, {
+      channel: job.channel_id,
+      user: userId,
+      text: score > 0 ? 'Thanks! Saved as a winning signal.' : 'Got it - we will tune future ranking.',
     });
   }
 
