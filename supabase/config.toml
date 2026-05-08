@@ -1,0 +1,5 @@
+[functions.slack-events]
+verify_jwt = false
+
+[functions.run-generation]
+verify_jwt = false

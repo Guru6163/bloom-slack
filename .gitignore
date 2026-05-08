@@ -1,0 +1,18 @@
+.env
+.env.*
+!.env.example
+
+# Deno
+deno.lock
+
+# Supabase local state
+supabase/.branches
+supabase/.temp
+
+# Logs
+*.log
+
+# macOS / editor
+.DS_Store
+.vscode
+.idea
