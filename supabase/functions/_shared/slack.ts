@@ -164,7 +164,7 @@ export function buildHelpBlocks(): unknown[] {
       text: {
         type: 'mrkdwn',
         text:
-          '*Commands:*\n`/bloom generate {prompt} {ratio}` — Generate images\n`/bloom setup` — Setup instructions\n`/bloom brand` — View current brand\n`/bloom help` — Show this message',
+          '*Commands:*\n`/bloom-gen generate {prompt} {ratio}` — Generate images\n`/bloom-gen setup <bloom_api_key> [brand_id]` — Connect workspace Bloom account\n`/bloom-gen brand [brand_id]` — View configured or specific brand\n`/bloom-gen brands` — List available brands\n`/bloom-gen images [limit]` — List recent images\n`/bloom-gen image <image_id>` — Get image details\n`/bloom-gen help` — Show this message',
       },
     },
     {
@@ -172,7 +172,7 @@ export function buildHelpBlocks(): unknown[] {
       text: {
         type: 'mrkdwn',
         text:
-          '*Ratios:* `1:1` `16:9` `9:16` `4:5` `square` `landscape` `portrait` `story`\n\n*Examples:*\n`/bloom generate summer sale hero 16:9`\n`/bloom generate product shot white background square`\n`/bloom generate instagram story launch day 9:16`',
+          '*Ratios:* `1:1` `16:9` `9:16` `4:5` `square` `landscape` `portrait` `story`\n\n*Examples:*\n`/bloom-gen generate summer sale hero 16:9`\n`/bloom-gen brands`\n`/bloom-gen images 10`\n`/bloom-gen image img_abc123`',
       },
     },
   ];

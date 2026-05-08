@@ -1,21 +1,53 @@
 export interface ParsedCommand {
-  action: 'generate' | 'setup' | 'brand' | 'help' | 'unknown';
+  action: 'generate' | 'setup' | 'brand' | 'brands' | 'images' | 'image' | 'help' | 'unknown';
   prompt: string;
   aspectRatio: string;
   variants: number;
+  setupApiKey?: string;
+  setupBrandId?: string;
+  entityId?: string;
+  limit?: number;
 }
 
 export function parseCommand(text: string): ParsedCommand {
   const trimmed = (text || '').trim();
+  const defaultParsed: ParsedCommand = { action: 'help', prompt: '', aspectRatio: '16:9', variants: 2 };
+  const lower = trimmed.toLowerCase();
 
-  if (!trimmed || trimmed.toLowerCase() === 'help') {
-    return { action: 'help', prompt: '', aspectRatio: '16:9', variants: 2 };
+  if (!trimmed || lower === 'help') {
+    return defaultParsed;
   }
-  if (trimmed.toLowerCase() === 'setup') {
-    return { action: 'setup', prompt: '', aspectRatio: '16:9', variants: 2 };
+  if (lower.startsWith('setup')) {
+    const setupText = trimmed.slice(5).trim();
+    const [apiKey = '', brandId = ''] = setupText.split(/\s+/).filter(Boolean);
+    return {
+      action: 'setup',
+      prompt: '',
+      aspectRatio: '16:9',
+      variants: 2,
+      setupApiKey: apiKey,
+      setupBrandId: brandId,
+    };
   }
-  if (trimmed.toLowerCase() === 'brand') {
-    return { action: 'brand', prompt: '', aspectRatio: '16:9', variants: 2 };
+  if (lower === 'brand') {
+    return { ...defaultParsed, action: 'brand' };
+  }
+  if (lower.startsWith('brand ')) {
+    return { ...defaultParsed, action: 'brand', entityId: trimmed.split(/\s+/).slice(1).join(' ') };
+  }
+  if (lower === 'brands') {
+    return { ...defaultParsed, action: 'brands' };
+  }
+  if (lower === 'images') {
+    return { ...defaultParsed, action: 'images', limit: 10 };
+  }
+  if (lower.startsWith('images ')) {
+    const requestedLimit = Number.parseInt(trimmed.split(/\s+/)[1] || '', 10);
+    const safeLimit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(25, requestedLimit)) : 10;
+    return { ...defaultParsed, action: 'images', limit: safeLimit };
+  }
+  if (lower.startsWith('image ')) {
+    return { ...defaultParsed, action: 'image', entityId: trimmed.split(/\s+/).slice(1).join(' ') };
   }
 
   const ratioMap: Record<string, string> = {

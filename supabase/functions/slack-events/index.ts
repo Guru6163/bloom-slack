@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
-import { getWorkspaceConfig, createJob, updateJob } from '../_shared/db.ts';
+import { getWorkspaceConfig, createJob, saveWorkspaceConfig, updateJob } from '../_shared/db.ts';
+import { getBrand, getImage, getImageUrl, listBrands, listImages, resolveBrandSessionId, validateKey } from '../_shared/bloom.ts';
 import { postMessage, buildLoadingBlocks, buildHelpBlocks } from '../_shared/slack.ts';
 import { parseCommand } from '../_shared/utils.ts';
 
@@ -68,29 +69,226 @@ async function handleSlashCommand(payload: {
 }): Promise<Response> {
   const { teamId, channelId, userId, text } = payload;
   const parsed = parseCommand(text);
+  const config = await getWorkspaceConfig(teamId);
 
   // HELP
   if (parsed.action === 'help') {
     return slackResponse({ blocks: buildHelpBlocks(), response_type: 'ephemeral' });
   }
 
-  // Get workspace config
-  const config = await getWorkspaceConfig(teamId);
+  // SETUP
+  if (parsed.action === 'setup') {
+    const apiKey = parsed.setupApiKey || '';
+    const requestedBrandId = parsed.setupBrandId || '';
 
-  // SETUP or no config
-  if (parsed.action === 'setup' || !config?.bloom_api_key) {
+    if (!apiKey) {
+      return slackResponse({
+        response_type: 'ephemeral',
+        text:
+          'To connect Bloom for this workspace, run:\n' +
+          '`/bloom-gen setup <bloom_api_key> [brand_id]`\n\n' +
+          'If `brand_id` is omitted, the first brand from your Bloom account is used.',
+      });
+    }
+
+    const isValid = await validateKey(apiKey);
+    if (!isValid) {
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: '❌ Invalid Bloom API key. Please verify the key and try again.',
+      });
+    }
+
+    let selectedBrand: Record<string, unknown> | null = null;
+    if (requestedBrandId) {
+      try {
+        const brandResponse = await getBrand(apiKey, requestedBrandId) as Record<string, unknown>;
+        selectedBrand = extractBrandRecord(brandResponse);
+      } catch {
+        selectedBrand = null;
+      }
+      if (!selectedBrand) {
+        return slackResponse({
+          response_type: 'ephemeral',
+          text: `❌ Brand not found for ID \`${requestedBrandId}\`. Try without a brand ID to use your default brand.`,
+        });
+      }
+    } else {
+      const brands = await listBrands(apiKey);
+      selectedBrand = brands.find((item) => !!item && typeof item === 'object') as Record<string, unknown> | undefined || null;
+      if (!selectedBrand) {
+        return slackResponse({
+          response_type: 'ephemeral',
+          text: '❌ No brands found in this Bloom account. Please create a brand in Bloom first.',
+        });
+      }
+    }
+
+    const brandId = String(
+      selectedBrand.id ??
+      selectedBrand.brandId ??
+      selectedBrand.brand_id ??
+      requestedBrandId ??
+      '',
+    );
+    const brandName = String(selectedBrand.name ?? selectedBrand.brandName ?? selectedBrand.brand_name ?? '');
+    const brandSessionId = resolveBrandSessionId(selectedBrand);
+
+    if (!brandId) {
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: '❌ Could not resolve a usable brand ID from Bloom. Please try another brand.',
+      });
+    }
+
+    await saveWorkspaceConfig({
+      team_id: teamId,
+      bloom_api_key: apiKey,
+      brand_id: brandId,
+      ...(brandName ? { brand_name: brandName } : {}),
+      ...(brandSessionId ? { brand_session_id: brandSessionId } : {}),
+    });
+
     return slackResponse({
       response_type: 'ephemeral',
-      text: '🌸 Bloom is not configured yet. Contact your workspace admin to set it up.',
+      text:
+        '✅ Bloom connected for this workspace.\n' +
+        `*Brand:* ${brandName || 'Unknown'}\n` +
+        `*Brand ID:* \`${brandId}\`\n\n` +
+        'You can now run `/bloom-gen generate <prompt> [ratio]`.',
+    });
+  }
+
+  // No setup yet
+  if (!config?.bloom_api_key) {
+    return slackResponse({
+      response_type: 'ephemeral',
+      text:
+        '🌸 Bloom is not configured for this workspace.\n' +
+        'Run `/bloom-gen setup <bloom_api_key> [brand_id]` to connect your workspace-specific Bloom account.',
     });
   }
 
   // BRAND
   if (parsed.action === 'brand') {
+    if (parsed.entityId) {
+      try {
+        const brandResponse = await getBrand(config.bloom_api_key, parsed.entityId) as Record<string, unknown>;
+        const brand = extractBrandRecord(brandResponse);
+        if (!brand) throw new Error('Brand not found');
+        const brandId = String(brand.id ?? brand.brandId ?? brand.brand_id ?? parsed.entityId);
+        const brandName = String(brand.name ?? brand.brandName ?? brand.brand_name ?? 'Unknown');
+        const brandSessionId = resolveBrandSessionId(brand);
+        return slackResponse({
+          response_type: 'ephemeral',
+          text:
+            `*Brand:* ${brandName}\n` +
+            `*Brand ID:* \`${brandId}\`\n` +
+            `*Session ID:* \`${brandSessionId || 'N/A'}\``,
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unable to fetch brand';
+        return slackResponse({
+          response_type: 'ephemeral',
+          text: `❌ ${message}`,
+        });
+      }
+    }
+
     return slackResponse({
       response_type: 'ephemeral',
       text: `*Current Brand:* ${config.brand_name || 'Unknown'}\n*Brand ID:* \`${config.brand_id}\``,
     });
+  }
+
+  // BRANDS
+  if (parsed.action === 'brands') {
+    try {
+      const brands = await listBrands(config.bloom_api_key);
+      const lines = brands
+        .filter((item) => !!item && typeof item === 'object')
+        .slice(0, 20)
+        .map((item) => {
+          const brand = item as Record<string, unknown>;
+          const id = String(brand.id ?? brand.brandId ?? brand.brand_id ?? '');
+          const name = String(brand.name ?? brand.brandName ?? brand.brand_name ?? 'Unknown');
+          return `• ${name} (\`${id || 'N/A'}\`)`;
+        });
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: lines.length
+          ? `*Available Bloom Brands (${lines.length})*\n${lines.join('\n')}`
+          : 'No brands found in your Bloom account.',
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to list brands';
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: `❌ ${message}`,
+      });
+    }
+  }
+
+  // IMAGES
+  if (parsed.action === 'images') {
+    try {
+      const images = await listImages(config.bloom_api_key, parsed.limit ?? 10);
+      const lines = images
+        .filter((item) => !!item && typeof item === 'object')
+        .slice(0, 25)
+        .map((item) => formatImageSummary(item as Record<string, unknown>));
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: lines.length
+          ? `*Recent Bloom Images (${lines.length})*\n${lines.join('\n')}`
+          : 'No images found in your Bloom account.',
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to list images';
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: `❌ ${message}`,
+      });
+    }
+  }
+
+  // IMAGE
+  if (parsed.action === 'image') {
+    if (!parsed.entityId) {
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: 'Usage: `/bloom-gen image <image_id>`',
+      });
+    }
+
+    try {
+      const image = await getImage(config.bloom_api_key, parsed.entityId);
+      if (!image || typeof image !== 'object') {
+        return slackResponse({
+          response_type: 'ephemeral',
+          text: `Image not found for ID \`${parsed.entityId}\`.`,
+        });
+      }
+      const img = image as Record<string, unknown>;
+      const url = getImageUrl(img);
+      const id = String(img.id ?? img.imageId ?? parsed.entityId);
+      const status = String(img.status ?? 'unknown');
+      const prompt = String(img.prompt ?? img.originalPrompt ?? '').trim();
+      return slackResponse({
+        response_type: 'ephemeral',
+        text:
+          `*Image ID:* \`${id}\`\n` +
+          `*Status:* ${status}\n` +
+          `${prompt ? `*Prompt:* ${prompt}\n` : ''}` +
+          `${url ? `*URL:* ${url}` : '*URL:* Not available yet'}`,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to fetch image';
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: `❌ ${message}`,
+      });
+    }
   }
 
   // GENERATE
@@ -137,6 +335,24 @@ async function handleSlashCommand(payload: {
   }
 
   return new Response('', { status: 200 });
+}
+
+function extractBrandRecord(input: Record<string, unknown>): Record<string, unknown> | null {
+  const data = input?.data;
+  if (data && typeof data === 'object') {
+    const maybeBrand = (data as Record<string, unknown>).brand;
+    if (maybeBrand && typeof maybeBrand === 'object') return maybeBrand as Record<string, unknown>;
+  }
+  return input;
+}
+
+function formatImageSummary(image: Record<string, unknown>): string {
+  const id = String(image.id ?? image.imageId ?? 'N/A');
+  const status = String(image.status ?? 'unknown');
+  const url = getImageUrl(image);
+  const prompt = String(image.prompt ?? image.originalPrompt ?? '').trim();
+  const clippedPrompt = prompt.length > 72 ? `${prompt.slice(0, 69)}...` : prompt;
+  return `• \`${id}\` · ${status}${clippedPrompt ? ` · ${clippedPrompt}` : ''}${url ? `\n  ${url}` : ''}`;
 }
 
 async function handleInteractiveAction(data: any): Promise<Response> {

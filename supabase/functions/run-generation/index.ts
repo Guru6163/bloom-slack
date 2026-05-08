@@ -28,7 +28,7 @@ serve(async (req: Request) => {
   const messageTs = String(job.message_ts ?? '');
 
   try {
-    const bloomApiKey = config.bloom_api_key || Deno.env.get('BLOOM_API_KEY') || '';
+    const bloomApiKey = config.bloom_api_key || '';
     if (!bloomApiKey) throw new Error('No Bloom API key configured');
     const brandSessionId = config.brand_session_id || config.brand_id;
 
