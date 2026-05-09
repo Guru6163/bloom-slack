@@ -15,6 +15,10 @@ export interface WorkspaceConfig {
   brand_name?: string;
   brand_session_id?: string;
   bot_token: string;
+  setup_completed?: boolean;
+  setup_token?: string | null;
+  bot_user_id?: string | null;
+  installed_by?: string | null;
 }
 
 export interface PromptTemplate {
@@ -55,6 +59,8 @@ export async function createJob(job: {
   brand_id?: string;
   source_image_id?: string;
   intent?: string;
+  /** Parent thread ts when the job’s Slack message was posted in a thread (required for chat.update). */
+  thread_ts?: string | null;
 }): Promise<string> {
   const supabase = getSupabase();
   const { data, error } = await supabase
@@ -192,4 +198,175 @@ export async function getVariantPositionBias(
     }
   }
   return bias;
+}
+
+// --- Agent conversations & workspace setup (pass supabase client from edge functions) ---
+
+export async function getOrCreateConversation(
+  supabase: ReturnType<typeof createClient>,
+  teamId: string,
+  channelId: string,
+  threadTs: string,
+  userId: string,
+): Promise<Record<string, unknown>> {
+  const { data: existing } = await supabase
+    .from('agent_conversations')
+    .select('*')
+    .eq('team_id', teamId)
+    .eq('channel_id', channelId)
+    .eq('thread_ts', threadTs)
+    .maybeSingle();
+
+  if (existing) {
+    await supabase
+      .from('agent_conversations')
+      .update({ last_active_at: new Date().toISOString() })
+      .eq('id', (existing as { id: string }).id);
+    return existing as Record<string, unknown>;
+  }
+
+  const { data: created, error } = await supabase
+    .from('agent_conversations')
+    .insert({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, user_id: userId })
+    .select()
+    .single();
+
+  if (error || !created) throw new Error(error?.message || 'Failed to create conversation');
+  return created as Record<string, unknown>;
+}
+
+export async function getConversationByThread(
+  supabase: ReturnType<typeof createClient>,
+  teamId: string,
+  channelId: string,
+  threadTs: string,
+): Promise<Record<string, unknown> | null> {
+  const { data } = await supabase
+    .from('agent_conversations')
+    .select('*')
+    .eq('team_id', teamId)
+    .eq('channel_id', channelId)
+    .eq('thread_ts', threadTs)
+    .maybeSingle();
+  return (data as Record<string, unknown> | null) ?? null;
+}
+
+export async function getConversationMessages(
+  supabase: ReturnType<typeof createClient>,
+  conversationId: string,
+): Promise<{ role: string; content: string }[]> {
+  const { data } = await supabase
+    .from('agent_messages')
+    .select('role, content')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: true })
+    .limit(20);
+  return (data ?? []) as { role: string; content: string }[];
+}
+
+export async function saveMessage(
+  supabase: ReturnType<typeof createClient>,
+  conversationId: string,
+  role: 'user' | 'assistant',
+  content: string,
+  imageUrls: string[] = [],
+): Promise<void> {
+  await supabase.from('agent_messages').insert({
+    conversation_id: conversationId,
+    role,
+    content,
+    image_urls: imageUrls,
+  });
+}
+
+export async function updateCampaignContext(
+  supabase: ReturnType<typeof createClient>,
+  conversationId: string,
+  context: Record<string, unknown>,
+): Promise<void> {
+  await supabase
+    .from('agent_conversations')
+    .update({ campaign_context: context, last_active_at: new Date().toISOString() })
+    .eq('id', conversationId);
+}
+
+export async function generateSetupToken(
+  supabase: ReturnType<typeof createClient>,
+  teamId: string,
+): Promise<string> {
+  const token = crypto.randomUUID();
+  const { data: row } = await supabase
+    .from('workspace_configs')
+    .select('team_id')
+    .eq('team_id', teamId)
+    .maybeSingle();
+
+  if (row) {
+    await supabase
+      .from('workspace_configs')
+      .update({ setup_token: token })
+      .eq('team_id', teamId);
+  } else {
+    await supabase.from('workspace_configs').insert({
+      team_id: teamId,
+      setup_token: token,
+      bloom_api_key: '',
+      brand_id: '',
+      bot_token: '',
+      setup_completed: false,
+    });
+  }
+  return token;
+}
+
+export async function getWorkspaceBySetupToken(
+  supabase: ReturnType<typeof createClient>,
+  token: string,
+): Promise<Record<string, unknown> | null> {
+  const { data } = await supabase
+    .from('workspace_configs')
+    .select('*')
+    .eq('setup_token', token)
+    .maybeSingle();
+  return (data as Record<string, unknown> | null) ?? null;
+}
+
+export async function updateWorkspaceBrand(
+  supabase: ReturnType<typeof createClient>,
+  teamId: string,
+  brandId: string,
+  brandName: string,
+  brandSessionId: string,
+): Promise<void> {
+  await supabase
+    .from('workspace_configs')
+    .update({
+      brand_id: brandId,
+      brand_name: brandName,
+      brand_session_id: brandSessionId,
+      setup_completed: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('team_id', teamId);
+}
+
+export async function completeSetup(
+  supabase: ReturnType<typeof createClient>,
+  teamId: string,
+  bloomApiKey: string,
+  brandId: string,
+  brandName: string,
+  brandSessionId: string,
+): Promise<void> {
+  await supabase
+    .from('workspace_configs')
+    .update({
+      bloom_api_key: bloomApiKey,
+      brand_id: brandId,
+      brand_name: brandName,
+      brand_session_id: brandSessionId,
+      setup_completed: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('team_id', teamId);
 }

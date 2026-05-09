@@ -56,6 +56,11 @@ serve(async (req: Request) => {
   const channelId = String(job.channel_id ?? '');
   const aspectRatio = String(job.aspect_ratio ?? '16:9');
   const variantCount = Number(job.variants ?? 2);
+  /** Required on chat.update for messages posted inside a Slack thread. */
+  const slackThreadTs =
+    job.thread_ts != null && String(job.thread_ts).trim() !== ''
+      ? String(job.thread_ts).trim()
+      : undefined;
   let liveMessageTs = messageTs;
 
   try {
@@ -69,13 +74,14 @@ serve(async (req: Request) => {
         config.bot_token,
         channelId,
         buildRequestBlocks(prompt, aspectRatio, userId),
+        slackThreadTs,
       );
       const requestTs = String(requestMsg.ts ?? '');
       const queuedMsg = await postMessage(
         config.bot_token,
         channelId,
         buildProgressBlocks(prompt, aspectRatio, userId, 'queued'),
-        requestTs || undefined,
+        requestTs || slackThreadTs,
       );
       progressTs = String(queuedMsg.ts ?? requestTs);
       await updateJob(jobId, { message_ts: progressTs });
@@ -87,6 +93,7 @@ serve(async (req: Request) => {
       channelId,
       progressTs,
       buildProgressBlocks(prompt, aspectRatio, userId, 'generating'),
+      slackThreadTs,
     );
 
     let imageIds: string[] = [];
@@ -120,6 +127,7 @@ serve(async (req: Request) => {
         channelId,
         progressTs,
         buildProgressBlocks(prompt, aspectRatio, userId, 'finalizing'),
+        slackThreadTs,
       );
 
       const images = await pollImagesUntilDone(bloomApiKey, imageIds);
@@ -152,6 +160,7 @@ serve(async (req: Request) => {
       channelId,
       progressTs,
       buildResultBlocks(prompt, aspectRatio, imageUrls, jobId, 0, config.brand_name),
+      slackThreadTs,
     );
 
     return new Response('OK', { status: 200 });
@@ -159,12 +168,17 @@ serve(async (req: Request) => {
     const message = err instanceof Error ? err.message : String(err);
     await updateJob(jobId, { status: 'failed', error: message });
     if (liveMessageTs) {
-      await updateMessage(
-        config.bot_token,
-        channelId,
-        liveMessageTs,
-        buildErrorBlocks(prompt, message, jobId),
-      );
+      try {
+        await updateMessage(
+          config.bot_token,
+          channelId,
+          liveMessageTs,
+          buildErrorBlocks(prompt, message, jobId),
+          slackThreadTs,
+        );
+      } catch (slackErr) {
+        console.error('run-generation: failed to post error to Slack', slackErr);
+      }
     }
     return new Response('Error', { status: 500 });
   }

@@ -35,12 +35,19 @@ export async function getBrand(apiKey: string, brandId: string): Promise<unknown
   return extractEntity(data);
 }
 
-export async function listImages(apiKey: string, limit = 10): Promise<unknown[]> {
-  const safeLimit = Math.max(1, Math.min(25, Number.isFinite(limit) ? limit : 10));
+export async function listImages(
+  apiKey: string,
+  limit = 10,
+  opts?: { brandSessionId?: string; source?: string; status?: string },
+): Promise<unknown[]> {
+  const safeLimit = Math.max(1, Math.min(100, Number.isFinite(limit) ? limit : 10));
   const params = new URLSearchParams({
     limit: String(safeLimit),
     includeUrls: 'true',
   });
+  if (opts?.brandSessionId) params.set('brandSessionId', opts.brandSessionId);
+  if (opts?.source) params.set('source', opts.source);
+  if (opts?.status) params.set('status', opts.status);
   const data = await fetchBloom(`/images?${params.toString()}`, apiKey) as Record<string, unknown>;
   return extractCollection(data, 'images');
 }
@@ -86,13 +93,57 @@ export async function generateImages(
 }
 
 export async function pollImagesUntilDone(apiKey: string, imageIds: string[]): Promise<unknown[]> {
-  const params = new URLSearchParams({
-    ids: imageIds.join(','),
-    wait: 'true',
-    timeout: '120',
-    includeUrls: 'true',
-  });
-  return listImagesByQuery(apiKey, params, true);
+  if (!imageIds.length) return [];
+
+  // Single 120s long-poll can exceed Edge run limits or stall; use shorter waits in a loop.
+  const deadline = Date.now() + 100_000;
+  let lastError: Error | null = null;
+
+  while (Date.now() < deadline) {
+    const budgetSec = Math.max(5, Math.min(25, Math.floor((deadline - Date.now()) / 1000)));
+    const params = new URLSearchParams({
+      ids: imageIds.join(','),
+      wait: 'true',
+      timeout: String(budgetSec),
+      includeUrls: 'true',
+    });
+
+    try {
+      const data = await fetchBloom(`/images?${params.toString()}`, apiKey) as Record<string, unknown>;
+      const images = extractCollection(data, 'images');
+      const byId = new Map<string, Record<string, unknown>>();
+      for (const img of images) {
+        if (!img || typeof img !== 'object') continue;
+        const row = img as Record<string, unknown>;
+        const id = String(row.id ?? row.imageId ?? '').trim();
+        if (id) byId.set(id, row);
+      }
+
+      const ordered: unknown[] = [];
+      let allReady = true;
+      for (const id of imageIds) {
+        const row = byId.get(id);
+        const url = row ? getImageUrl(row) : '';
+        const status = String(row?.status ?? '').toLowerCase();
+        if (status === 'failed' || status === 'error' || status === 'cancelled') {
+          const detail = String(row?.error ?? row?.failureReason ?? status);
+          throw new Error(`Bloom image failed (${id}): ${detail}`);
+        }
+        if (url) ordered.push(row);
+        else allReady = false;
+      }
+
+      if (allReady && ordered.length === imageIds.length) return ordered;
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (err.message.startsWith('Bloom image failed')) throw err;
+      lastError = err;
+    }
+
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  throw lastError ?? new Error('Timed out waiting for Bloom images (no URL after polling)');
 }
 
 export function getImageUrl(image: Record<string, unknown>): string {

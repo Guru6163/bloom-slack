@@ -11,7 +11,15 @@ export async function slackApi(
     },
     body: JSON.stringify(body),
   });
-  return res.json() as Promise<Record<string, unknown>>;
+  const data = await res.json() as Record<string, unknown>;
+  if (data.ok !== true) {
+    const err = String(data.error ?? `http_${res.status}`);
+    const detail = data.response_metadata
+      ? JSON.stringify(data.response_metadata)
+      : '';
+    throw new Error(`Slack ${endpoint}: ${err}${detail ? ` ${detail}` : ''}`);
+  }
+  return data;
 }
 
 export async function updateMessage(
@@ -19,8 +27,15 @@ export async function updateMessage(
   channel: string,
   ts: string,
   blocks: unknown[],
+  threadTs?: string | null,
 ): Promise<void> {
-  await slackApi('chat.update', botToken, { channel, ts, blocks });
+  await slackApi('chat.update', botToken, {
+    channel,
+    ts,
+    blocks,
+    text: 'Bloom image update',
+    ...(threadTs ? { thread_ts: threadTs } : {}),
+  });
 }
 
 export async function postMessage(
@@ -32,11 +47,33 @@ export async function postMessage(
   return slackApi('chat.postMessage', botToken, {
     channel,
     blocks,
+    text: 'Bloom',
     ...(threadTs ? { thread_ts: threadTs } : {}),
   });
 }
 
 type ProgressStage = 'queued' | 'generating' | 'finalizing' | 'done';
+
+/** Slack mrkdwn in a section is capped (~3000). */
+export function truncateSlackMrkdwn(text: string, max = 2800): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 15)}… (truncated)`;
+}
+
+/** Image block alt_text max 2000; keep smaller for safety. */
+function truncateSlackPlain(text: string, max = 1800): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
+
+function isHttpsImageUrlForSlack(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 export function buildRequestBlocks(prompt: string, ratio: string, userId: string): unknown[] {
   return [
@@ -44,7 +81,7 @@ export function buildRequestBlocks(prompt: string, ratio: string, userId: string
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `👤 <@${userId}> requested a Bloom generation\n*Prompt:* ${prompt}\n*Ratio:* ${ratio}`,
+        text: `👤 <@${userId}> requested a Bloom generation\n*Prompt:* ${truncateSlackMrkdwn(prompt)}\n*Ratio:* ${ratio}`,
       },
     },
     {
@@ -78,13 +115,14 @@ export function buildProgressBlocks(
     `${stage === 'done' ? '🟢' : '⚪'} Done`,
   ].join('  •  ');
 
+  const safePrompt = truncateSlackMrkdwn(prompt);
   const blocks: unknown[] = [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
         text:
-          `${status[stage]} *Bloom generation in progress*\n\n*Prompt:* ${prompt}\n*Ratio:* ${ratio}\n*Requested by:* <@${userId}>`,
+          `${status[stage]} *Bloom generation in progress*\n\n*Prompt:* ${safePrompt}\n*Ratio:* ${ratio}\n*Requested by:* <@${userId}>`,
       },
     },
     {
@@ -116,6 +154,22 @@ export function buildResultBlocks(
 ): unknown[] {
   const currentUrl = imageUrls[currentIndex];
   const total = imageUrls.length;
+  const safePrompt = truncateSlackMrkdwn(prompt);
+  const safeAlt = truncateSlackPlain(prompt);
+
+  const previewBlock: unknown = isHttpsImageUrlForSlack(currentUrl)
+    ? {
+      type: 'image',
+      image_url: currentUrl,
+      alt_text: safeAlt,
+    }
+    : {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Image preview:* Slack needs an \`https\` image URL. <${currentUrl}|Open image in browser>`,
+      },
+    };
 
   return [
     {
@@ -123,14 +177,10 @@ export function buildResultBlocks(
       text: {
         type: 'mrkdwn',
         text:
-          `🌸 *${prompt}*\n${ratio} · ${brandName || 'Bloom'} · Image ${currentIndex + 1} of ${total}`,
+          `🌸 *${safePrompt}*\n${ratio} · ${brandName || 'Bloom'} · Image ${currentIndex + 1} of ${total}`,
       },
     },
-    {
-      type: 'image',
-      image_url: currentUrl,
-      alt_text: prompt,
-    },
+    previewBlock,
     {
       type: 'actions',
       elements: [
@@ -172,25 +222,25 @@ export function buildResultBlocks(
           type: 'button',
           text: { type: 'plain_text', text: '💎 More premium' },
           value: JSON.stringify({ jobId, imageIndex: currentIndex, intent: 'premium' }),
-          action_id: 'bloom_apply_intent',
+          action_id: 'bloom_intent_premium',
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: '☀️ Brighter' },
           value: JSON.stringify({ jobId, imageIndex: currentIndex, intent: 'brighter' }),
-          action_id: 'bloom_apply_intent',
+          action_id: 'bloom_intent_brighter',
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: '📦 Product-focused' },
           value: JSON.stringify({ jobId, imageIndex: currentIndex, intent: 'product' }),
-          action_id: 'bloom_apply_intent',
+          action_id: 'bloom_intent_product',
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: '🎄 Holiday mood' },
           value: JSON.stringify({ jobId, imageIndex: currentIndex, intent: 'holiday' }),
-          action_id: 'bloom_apply_intent',
+          action_id: 'bloom_intent_holiday',
         },
       ],
     },
@@ -201,13 +251,13 @@ export function buildResultBlocks(
           type: 'button',
           text: { type: 'plain_text', text: '👍' },
           value: JSON.stringify({ jobId, imageIndex: currentIndex, score: 1 }),
-          action_id: 'bloom_feedback',
+          action_id: 'bloom_feedback_up',
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: '👎' },
           value: JSON.stringify({ jobId, imageIndex: currentIndex, score: -1 }),
-          action_id: 'bloom_feedback',
+          action_id: 'bloom_feedback_down',
         },
       ],
     },
@@ -224,7 +274,7 @@ export function buildErrorBlocks(prompt: string, error: string, jobId: string): 
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `❌ *Generation failed*\n*Prompt:* ${prompt}\n*Error:* ${error}`,
+        text: `❌ *Generation failed*\n*Prompt:* ${truncateSlackMrkdwn(prompt)}\n*Error:* ${truncateSlackMrkdwn(error, 1200)}`,
       },
     },
     {

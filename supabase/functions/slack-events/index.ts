@@ -1,6 +1,9 @@
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   createJob,
+  generateSetupToken,
+  getConversationByThread,
   getJob,
   getWorkspaceConfig,
   recordImageFeedback,
@@ -21,19 +24,19 @@ import {
 } from '../_shared/bloom.ts';
 import {
   buildHelpBlocks,
+  buildLoadingBlocks,
   buildResultBlocks,
   postMessage,
   slackApi,
+  updateMessage,
 } from '../_shared/slack.ts';
 import { parseCommand } from '../_shared/utils.ts';
 
 serve(async (req: Request) => {
   const url = new URL(req.url);
 
-  // Test endpoint
   if (url.searchParams.get('test') === '1') {
     return new Response(JSON.stringify({ ok: true, message: 'Function is live' }), {
-      status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -45,37 +48,97 @@ serve(async (req: Request) => {
   const rawBody = await req.text();
   const contentType = req.headers.get('content-type') || '';
 
-  // URL verification challenge
   if (contentType.includes('application/json')) {
     try {
-      const json = JSON.parse(rawBody);
+      const json = JSON.parse(rawBody) as Record<string, unknown>;
+
       if (json.type === 'url_verification') {
-        return new Response(JSON.stringify({ challenge: json.challenge }), {
+        return new Response(JSON.stringify({ challenge: (json as { challenge?: string }).challenge }), {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-    } catch (_e) { /* not json */ }
+
+      if (json.type === 'event_callback') {
+        const ackResponse = new Response('', { status: 200 });
+        const event = json.event as Record<string, unknown>;
+        const teamId = String(json.team_id ?? '');
+
+        if (event.bot_id || event.subtype === 'bot_message') {
+          return ackResponse;
+        }
+
+        const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+        const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+        if (event.type === 'app_mention') {
+          fetch(`${supabaseUrl}/functions/v1/openai-agent`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${serviceKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              teamId,
+              channelId: event.channel,
+              userId: event.user,
+              threadTs: event.thread_ts || null,
+              messageTs: event.ts,
+              text: event.text,
+            }),
+          });
+          return ackResponse;
+        }
+
+        if (event.type === 'message' && event.thread_ts && !event.bot_id) {
+          const supabase = createClient(supabaseUrl, serviceKey);
+          const conversation = await getConversationByThread(
+            supabase,
+            teamId,
+            String(event.channel),
+            String(event.thread_ts),
+          );
+
+          if (conversation) {
+            fetch(`${supabaseUrl}/functions/v1/openai-agent`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${serviceKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                teamId,
+                channelId: event.channel,
+                userId: event.user,
+                threadTs: event.thread_ts,
+                messageTs: event.ts,
+                text: event.text,
+              }),
+            });
+          }
+          return ackResponse;
+        }
+
+        return ackResponse;
+      }
+    } catch (_e) { /* ignore */ }
   }
 
-  // Interactive payload (button clicks)
   if (contentType.includes('application/x-www-form-urlencoded')) {
     const params = new URLSearchParams(rawBody);
     const interactivePayload = params.get('payload');
 
     if (interactivePayload) {
-      const data = JSON.parse(interactivePayload);
-      return await handleInteractiveAction(data);
+      return await handleInteractiveAction(JSON.parse(interactivePayload));
     }
 
-    // Slash command
-    const command = params.get('command');
-    if (command === '/bloom-gen') {
-      const teamId = params.get('team_id') || '';
-      const channelId = params.get('channel_id') || '';
-      const userId = params.get('user_id') || '';
-      const text = params.get('text') || '';
-
-      return await handleSlashCommand({ teamId, channelId, userId, text });
+    if (params.get('command') === '/bloom-gen') {
+      return await handleSlashCommand({
+        teamId: params.get('team_id') || '',
+        channelId: params.get('channel_id') || '',
+        userId: params.get('user_id') || '',
+        text: params.get('text') || '',
+        threadTs: params.get('thread_ts') || undefined,
+      });
     }
   }
 
@@ -89,17 +152,19 @@ async function handleSlashCommand(payload: {
   channelId: string;
   userId: string;
   text: string;
+  threadTs?: string;
 }): Promise<Response> {
-  const { teamId, channelId, userId, text } = payload;
+  const { teamId, channelId, userId, text, threadTs } = payload;
   const parsed = parseCommand(text);
   const config = await getWorkspaceConfig(teamId);
 
-  // HELP
   if (parsed.action === 'help') {
-    return slackResponse({ blocks: buildHelpBlocks(), response_type: 'ephemeral' });
+    return slackResponse({
+      response_type: 'ephemeral',
+      blocks: buildHelpBlocks(),
+    });
   }
 
-  // SETUP
   if (parsed.action === 'setup') {
     const apiKey = parsed.setupApiKey || '';
     const requestedBrandId = parsed.setupBrandId || '';
@@ -110,7 +175,8 @@ async function handleSlashCommand(payload: {
         text:
           'To connect Bloom for this workspace, run:\n' +
           '`/bloom-gen setup <bloom_api_key> [brand_id]`\n\n' +
-          'If `brand_id` is omitted, the first brand from your Bloom account is used.',
+          'If `brand_id` is omitted, the first brand from your Bloom account is used.\n\n' +
+          'Or use the web setup link from your install DM.',
       });
     }
 
@@ -140,7 +206,8 @@ async function handleSlashCommand(payload: {
       }
     } else {
       const brands = await listBrands(apiKey);
-      selectedBrand = brands.find((item) => !!item && typeof item === 'object') as Record<string, unknown> | undefined || null;
+      selectedBrand = brands.find((item) => !!item && typeof item === 'object') as Record<string, unknown> | undefined ||
+        null;
       if (!selectedBrand) {
         return slackResponse({
           response_type: 'ephemeral',
@@ -151,10 +218,10 @@ async function handleSlashCommand(payload: {
 
     const brandId = String(
       selectedBrand.id ??
-      selectedBrand.brandId ??
-      selectedBrand.brand_id ??
-      requestedBrandId ??
-      '',
+        selectedBrand.brandId ??
+        selectedBrand.brand_id ??
+        requestedBrandId ??
+        '',
     );
     const brandName = String(selectedBrand.name ?? selectedBrand.brandName ?? selectedBrand.brand_name ?? '');
     const brandSessionId = resolveBrandSessionId(selectedBrand);
@@ -172,6 +239,7 @@ async function handleSlashCommand(payload: {
       brand_id: brandId,
       ...(brandName ? { brand_name: brandName } : {}),
       ...(brandSessionId ? { brand_session_id: brandSessionId } : {}),
+      setup_completed: true,
     });
 
     return slackResponse({
@@ -180,21 +248,23 @@ async function handleSlashCommand(payload: {
         '✅ Bloom connected for this workspace.\n' +
         `*Brand:* ${brandName || 'Unknown'}\n` +
         `*Brand ID:* \`${brandId}\`\n\n` +
-        'You can now run `/bloom-gen generate <prompt> [ratio]`.',
+        'You can now run `/bloom-gen generate <prompt> [ratio]` or mention @Bloom in a channel.',
     });
   }
 
-  // No setup yet
   if (!config?.bloom_api_key) {
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    );
+    const token = await generateSetupToken(supabase, teamId);
+    const setupUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/slack-setup?token=${token}`;
     return slackResponse({
       response_type: 'ephemeral',
-      text:
-        '🌸 Bloom is not configured for this workspace.\n' +
-        'Run `/bloom-gen setup <bloom_api_key> [brand_id]` to connect your workspace-specific Bloom account.',
+      text: `🌸 Bloom isn't configured yet.\nSet up here: ${setupUrl}`,
     });
   }
 
-  // BRAND
   if (parsed.action === 'brand') {
     if (parsed.entityId) {
       try {
@@ -219,16 +289,31 @@ async function handleSlashCommand(payload: {
       }
     }
 
-    return await postCommandResponse(
-      config.bot_token,
-      channelId,
-      userId,
-      text,
-      `*Current Brand:* ${config.brand_name || 'Unknown'}\n*Brand ID:* \`${config.brand_id}\``,
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
+    const token = await generateSetupToken(supabase, teamId);
+    const setupUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/slack-setup?token=${token}`;
+    return slackResponse({
+      response_type: 'ephemeral',
+      blocks: [{
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Current brand:* ${config.brand_name || 'Not set'}\n\n*Tip:* Mention @Bloom in any channel to generate images with natural language!`,
+        },
+      }, {
+        type: 'actions',
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: '🔄 Change Brand' },
+          url: setupUrl,
+        }],
+      }],
+    });
   }
 
-  // BRANDS
   if (parsed.action === 'brands') {
     try {
       const brands = await listBrands(config.bloom_api_key);
@@ -256,7 +341,6 @@ async function handleSlashCommand(payload: {
     }
   }
 
-  // IMAGES
   if (parsed.action === 'images') {
     try {
       const images = await listImages(config.bloom_api_key, parsed.limit ?? 10);
@@ -279,7 +363,6 @@ async function handleSlashCommand(payload: {
     }
   }
 
-  // IMAGE
   if (parsed.action === 'image') {
     if (!parsed.entityId) {
       return await postCommandResponse(config.bot_token, channelId, userId, text, 'Usage: `/bloom-gen image <image_id>`');
@@ -314,7 +397,6 @@ async function handleSlashCommand(payload: {
     }
   }
 
-  // CREDITS
   if (parsed.action === 'credits') {
     try {
       const credits = await getCredits(config.bloom_api_key);
@@ -331,7 +413,6 @@ async function handleSlashCommand(payload: {
     }
   }
 
-  // WORKSPACES
   if (parsed.action === 'workspaces') {
     try {
       const workspaces = await listWorkspaces(config.bloom_api_key);
@@ -359,16 +440,21 @@ async function handleSlashCommand(payload: {
     }
   }
 
-  // GENERATE
   if (parsed.action === 'generate') {
     if (!parsed.prompt) {
       return slackResponse({
         response_type: 'ephemeral',
-        text: '❌ Please add a prompt. Example: `/bloom-gen generate summer sale hero 16:9`',
+        text: '❌ Please add a prompt. Example: `/bloom-gen generate summer sale hero 16:9`\n\nOr mention @Bloom and describe what you need!',
       });
     }
 
-    // Create job quickly, then let run-generation post progress/results.
+    const loadingMsg = await postMessage(
+      config.bot_token,
+      channelId,
+      buildLoadingBlocks(parsed.prompt, parsed.aspectRatio, userId),
+      threadTs,
+    );
+
     const jobId = await createJob({
       team_id: teamId,
       channel_id: channelId,
@@ -377,9 +463,10 @@ async function handleSlashCommand(payload: {
       aspect_ratio: parsed.aspectRatio,
       variants: parsed.variants,
       brand_id: config.brand_id,
+      thread_ts: threadTs ?? null,
     });
 
-    await updateJob(jobId, { status: 'generating' });
+    await updateJob(jobId, { message_ts: String(loadingMsg.ts ?? ''), status: 'generating' });
     await upsertPromptTemplate({
       team_id: teamId,
       brand_id: config.brand_id,
@@ -388,7 +475,6 @@ async function handleSlashCommand(payload: {
       variants: parsed.variants,
     });
 
-    // Fire and forget — invoke run-generation
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     fetch(`${supabaseUrl}/functions/v1/run-generation`, {
@@ -398,15 +484,15 @@ async function handleSlashCommand(payload: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ jobId }),
-    }); // intentionally not awaited
-
-    return slackResponse({
-      response_type: 'ephemeral',
-      text: '🌸 Queued! Generating variants now - updates will appear in channel shortly.',
     });
+
+    return new Response('', { status: 200 });
   }
 
-  return new Response('', { status: 200 });
+  return slackResponse({
+    response_type: 'ephemeral',
+    text: '❌ Unknown command. Try `/bloom-gen help`.',
+  });
 }
 
 function formatImageSummary(image: Record<string, unknown>): string {
@@ -452,26 +538,40 @@ async function postCommandResponse(
   return new Response('', { status: 200 });
 }
 
-async function handleInteractiveAction(data: any): Promise<Response> {
-  const action = data.actions?.[0];
+async function handleInteractiveAction(data: Record<string, unknown>): Promise<Response> {
+  const actions = data.actions as Array<Record<string, unknown>> | undefined;
+  const action = actions?.[0];
   if (!action) return new Response('OK', { status: 200 });
 
-  const actionId = action.action_id;
-  const value = JSON.parse(action.value || '{}');
-  const teamId = data.team?.id;
+  const actionId = String(action.action_id ?? '');
+  const value = JSON.parse(String(action.value || '{}')) as Record<string, unknown>;
+  const teamId = String((data.team as Record<string, unknown> | undefined)?.id ?? '');
 
   const config = await getWorkspaceConfig(teamId);
-  const job = await getJob(value.jobId);
+  const job = await getJob(String(value.jobId ?? ''));
   if (!config || !job) return new Response('OK', { status: 200 });
 
   if (actionId === 'bloom_prev_image' || actionId === 'bloom_next_image') {
-    const newIndex = value.imageIndex;
-    await updateJob(value.jobId, { current_image_index: newIndex });
-    await slackApi('chat.update', config.bot_token, {
-      channel: job.channel_id,
-      ts: job.message_ts,
-      blocks: buildResultBlocks(job.prompt, job.aspect_ratio, job.image_urls, value.jobId, newIndex, config.brand_name),
-    });
+    const newIndex = Number(value.imageIndex ?? 0);
+    await updateJob(String(value.jobId), { current_image_index: newIndex });
+    const threadTs =
+      job.thread_ts != null && String(job.thread_ts).trim() !== ''
+        ? String(job.thread_ts).trim()
+        : undefined;
+    await updateMessage(
+      config.bot_token,
+      String(job.channel_id),
+      String(job.message_ts),
+      buildResultBlocks(
+        job.prompt,
+        job.aspect_ratio,
+        job.image_urls,
+        String(value.jobId),
+        newIndex,
+        config.brand_name,
+      ),
+      threadTs,
+    );
   }
 
   if (actionId === 'bloom_regenerate') {
@@ -483,6 +583,7 @@ async function handleInteractiveAction(data: any): Promise<Response> {
       aspect_ratio: job.aspect_ratio,
       variants: job.variants,
       brand_id: job.brand_id ?? config.brand_id,
+      thread_ts: job.thread_ts ?? null,
     });
     await updateJob(newJobId, { message_ts: job.message_ts, status: 'generating' });
 
@@ -498,7 +599,10 @@ async function handleInteractiveAction(data: any): Promise<Response> {
     });
   }
 
-  if (actionId === 'bloom_apply_intent') {
+  if (
+    actionId === 'bloom_apply_intent' ||
+    actionId.startsWith('bloom_intent_')
+  ) {
     const currentIds = (job.image_ids as string[] | null) ?? [];
     const idx = Number(value.imageIndex ?? 0);
     const baseImageId = String(currentIds[idx] ?? '');
@@ -514,6 +618,7 @@ async function handleInteractiveAction(data: any): Promise<Response> {
       brand_id: job.brand_id ?? config.brand_id,
       source_image_id: baseImageId,
       intent: String(value.intent ?? ''),
+      thread_ts: job.thread_ts ?? null,
     });
     await updateJob(newJobId, {
       message_ts: job.message_ts,
@@ -539,10 +644,14 @@ async function handleInteractiveAction(data: any): Promise<Response> {
     });
   }
 
-  if (actionId === 'bloom_feedback') {
-    const score = Number(value.score ?? 0) >= 0 ? 1 : -1;
+  if (actionId === 'bloom_feedback' || actionId === 'bloom_feedback_up' || actionId === 'bloom_feedback_down') {
+    const score = actionId === 'bloom_feedback_down'
+      ? -1
+      : actionId === 'bloom_feedback_up'
+      ? 1
+      : (Number(value.score ?? 0) >= 0 ? 1 : -1);
     const idx = Math.max(0, Number(value.imageIndex ?? 0));
-    const userId = String(data.user?.id ?? job.user_id ?? '');
+    const userId = String((data.user as Record<string, unknown> | undefined)?.id ?? job.user_id ?? '');
     await recordImageFeedback({
       team_id: String(job.team_id ?? teamId),
       brand_id: String(job.brand_id ?? config.brand_id ?? ''),
