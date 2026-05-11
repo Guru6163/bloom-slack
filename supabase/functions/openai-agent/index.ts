@@ -1,7 +1,7 @@
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { runAgent } from '../_shared/agent.ts';
-import { getImageUrl, listImages } from '../_shared/bloom.ts';
+import { getCredits, getImageUrl, listImages } from '../_shared/bloom.ts';
 import {
   createJob,
   generateSetupToken,
@@ -160,6 +160,39 @@ serve(async (req: Request) => {
           text: { type: 'mrkdwn', text: truncateSlackMrkdwn(combined, 2800) },
         }],
       });
+      return new Response('OK', { status: 200 });
+    }
+
+    if (decision.action === 'credits') {
+      try {
+        const credits = await getCredits(config.bloom_api_key);
+        const stats =
+          `*Bloom Credits*\nBalance: ${credits.balance ?? 'N/A'}\nUnlimited: ${credits.unlimited === null ? 'N/A' : credits.unlimited ? 'Yes' : 'No'}`;
+        const intro = decision.message?.trim();
+        const combined = intro ? `${intro}\n\n${stats}` : `🌸 ${stats}`;
+        await saveMessage(supabase, String(conversation.id), 'assistant', combined.slice(0, 8000));
+        await slackApi('chat.postMessage', config.bot_token, {
+          channel: channelId,
+          thread_ts: replyThreadTs,
+          text: 'Bloom — credits',
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: truncateSlackMrkdwn(combined, 2800) },
+          }],
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unable to fetch credits';
+        await saveMessage(supabase, String(conversation.id), 'assistant', `❌ ${message}`);
+        await slackApi('chat.postMessage', config.bot_token, {
+          channel: channelId,
+          thread_ts: replyThreadTs,
+          text: 'Bloom — credits error',
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: `❌ ${message}` },
+          }],
+        });
+      }
       return new Response('OK', { status: 200 });
     }
 

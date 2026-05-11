@@ -3,7 +3,7 @@ const OPENAI_BASE = 'https://api.openai.com/v1';
 
 export interface AgentDecision {
   message: string;
-  action: 'none' | 'clarify' | 'generate' | 'generate_multiple' | 'switch_brand' | 'list_images';
+  action: 'none' | 'clarify' | 'generate' | 'generate_multiple' | 'switch_brand' | 'list_images' | 'credits';
   generations: {
     prompt: string;
     aspect_ratio: string;
@@ -62,6 +62,12 @@ If the user asks to see recent images, gallery, thumbnails, "what did we generat
 - Optional: list_images_limit (integer 5–25, default 15) if they ask for a specific count
 - Set message to a short intro (e.g. "Here are your latest Bloom images for this brand:") — actual URLs will be filled in by the app after calling Bloom
 
+CREDITS / BALANCE (Bloom API — you cannot know credits without this action):
+If the user asks about credits, balance, "how many credits", remaining quota, or similar:
+- Set action to "credits"
+- Set generations to []
+- Set message to a brief line (e.g. "Here's your Bloom credit balance for this workspace:") — exact numbers will be filled in by the app after calling Bloom
+
 CURRENT CONTEXT:
 Brand: ${brandName}
 Brand Session ID: ${brandSessionId}
@@ -70,16 +76,17 @@ Campaign history: ${JSON.stringify(campaignContext)}
 RESPONSE FORMAT — return ONLY valid JSON, no markdown:
 {
   "message": "your reply in Slack markdown (*bold*, _italic_, bullet points)",
-  "action": "none | clarify | generate | generate_multiple | switch_brand | list_images",
+  "action": "none | clarify | generate | generate_multiple | switch_brand | list_images | credits",
   "generations": []
 }
 
 For action "generate": generations must be one object with prompt, aspect_ratio, variants, platform, label.
 For action "generate_multiple": generations must be 2–6 such objects.
 For action "list_images": generations must be [] and you may set "list_images_limit" (integer 5–25, optional).
+For action "credits": generations must be [].
 
 Rules:
-- action "none" or "clarify" or "list_images" or "switch_brand": generations must be []
+- action "none" or "clarify" or "list_images" or "switch_brand" or "credits": generations must be []
 - action "generate": generations has exactly 1 item
 - action "generate_multiple": generations has 2-6 items, one per platform
 - NEVER include anything outside the JSON object`;
@@ -123,7 +130,7 @@ export async function runAgent(
     const parsed = JSON.parse(text) as AgentDecision;
     if (!parsed.action) parsed.action = 'none';
     if (!parsed.generations) parsed.generations = [];
-    const allowed = new Set(['none', 'clarify', 'generate', 'generate_multiple', 'switch_brand', 'list_images']);
+    const allowed = new Set(['none', 'clarify', 'generate', 'generate_multiple', 'switch_brand', 'list_images', 'credits']);
     if (!allowed.has(parsed.action)) parsed.action = 'none';
     return parsed;
   } catch (_e) {
