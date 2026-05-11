@@ -31,6 +31,7 @@ import {
 } from './slack';
 import { parseCommand } from './utils';
 import { getAppBaseUrl } from './app-url';
+import { scheduleBackgroundFetch } from './schedule-background-fetch';
 
 function slackResponse(body: Record<string, unknown>): Response {
   return new Response(JSON.stringify(body), {
@@ -406,7 +407,7 @@ async function handleSlashCommand(payload: {
       variants: parsed.variants,
     });
 
-    fetch(`${baseUrl}/api/internal/run-generation`, {
+    scheduleBackgroundFetch('run-generation', `${baseUrl}/api/internal/run-generation`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${serviceKey}`,
@@ -476,7 +477,7 @@ async function handleInteractiveAction(data: Record<string, unknown>): Promise<R
     });
     await updateJob(newJobId, { message_ts: job.message_ts, status: 'generating' });
 
-    fetch(`${baseUrl}/api/internal/run-generation`, {
+    scheduleBackgroundFetch('run-generation', `${baseUrl}/api/internal/run-generation`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${serviceKey}`,
@@ -514,7 +515,7 @@ async function handleInteractiveAction(data: Record<string, unknown>): Promise<R
       image_urls: job.image_urls,
     });
 
-    fetch(`${baseUrl}/api/internal/run-generation`, {
+    scheduleBackgroundFetch('run-generation', `${baseUrl}/api/internal/run-generation`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${serviceKey}`,
@@ -603,7 +604,7 @@ export async function handleSlackEventsPost(
         const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
         if (event.type === 'app_mention') {
-          fetch(`${baseUrl}/api/internal/openai-agent`, {
+          scheduleBackgroundFetch('openai-agent', `${baseUrl}/api/internal/openai-agent`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${serviceKey}`,
@@ -631,7 +632,7 @@ export async function handleSlackEventsPost(
           );
 
           if (conversation) {
-            fetch(`${baseUrl}/api/internal/openai-agent`, {
+            scheduleBackgroundFetch('openai-agent', `${baseUrl}/api/internal/openai-agent`, {
               method: 'POST',
               headers: {
                 'Authorization': `Bearer ${serviceKey}`,

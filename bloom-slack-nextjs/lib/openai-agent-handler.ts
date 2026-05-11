@@ -13,6 +13,7 @@ import {
 } from './db';
 import { slackApi, truncateSlackMrkdwn } from './slack';
 import { getAppBaseUrl } from './app-url';
+import { scheduleBackgroundFetch } from './schedule-background-fetch';
 
 async function fetchBloomImagesForListing(
   apiKey: string,
@@ -233,7 +234,7 @@ export async function handleOpenAiAgentRequest(body: {
           status: 'generating',
         });
 
-        fetch(`${baseUrl}/api/internal/run-generation`, {
+        scheduleBackgroundFetch('run-generation', `${baseUrl}/api/internal/run-generation`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${serviceKey}`,
