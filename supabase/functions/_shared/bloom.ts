@@ -67,6 +67,128 @@ export function resolveBrandSessionId(brand: Record<string, unknown>): string {
   );
 }
 
+export function brandRecordId(brand: Record<string, unknown>): string {
+  return String(brand.id ?? brand.brandId ?? brand.brand_id ?? '').trim();
+}
+
+export function brandRecordName(brand: Record<string, unknown>): string {
+  return String(brand.name ?? brand.brandName ?? brand.brand_name ?? 'Unknown').trim() || 'Unknown';
+}
+
+function normalizeBrandQuery(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Slack mrkdwn: directory of brands (same shape as `/bloom-gen brands`). */
+export function formatSlackBrandsList(
+  brands: unknown[],
+  currentBrandId?: string,
+  maxRows = 20,
+): string {
+  const lines = brands
+    .filter((item) => !!item && typeof item === 'object')
+    .slice(0, maxRows)
+    .map((item) => {
+      const brand = item as Record<string, unknown>;
+      const id = brandRecordId(brand);
+      const name = brandRecordName(brand);
+      const cur = currentBrandId && id && id === currentBrandId ? ' _(current)_' : '';
+      return `• ${name} (\`${id || 'N/A'}\`)${cur}`;
+    });
+  if (!lines.length) return 'No brands found in your Bloom account.';
+  return `*Available Bloom Brands (${lines.length})*\n${lines.join('\n')}`;
+}
+
+export type PickBrandForWorkspaceResult =
+  | { ok: true; id: string; name: string; sessionId: string }
+  | { ok: false; message: string };
+
+/** Resolve a brand by explicit Bloom ID or by fuzzy name against `listBrands`. */
+export async function pickBrandForWorkspace(
+  apiKey: string,
+  options: { brandId?: string; brandNameHint?: string },
+): Promise<PickBrandForWorkspaceResult> {
+  const idIn = options.brandId?.trim() ?? '';
+  const hintIn = options.brandNameHint?.trim() ?? '';
+
+  if (idIn) {
+    try {
+      const raw = await getBrand(apiKey, idIn);
+      const brand = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+      if (!brand) return { ok: false, message: `Brand not found for ID \`${idIn}\`.` };
+      const id = brandRecordId(brand) || idIn;
+      const name = brandRecordName(brand);
+      const sessionId = resolveBrandSessionId(brand);
+      if (!id) return { ok: false, message: 'Could not resolve brand ID from Bloom response.' };
+      return { ok: true, id, name, sessionId };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : 'Unable to load brand' };
+    }
+  }
+
+  if (!hintIn) {
+    return {
+      ok: false,
+      message: 'Please specify a brand ID or name (e.g. "switch to Acme" or paste a brand ID).',
+    };
+  }
+
+  let brands: unknown[];
+  try {
+    brands = await listBrands(apiKey);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : 'Unable to list brands' };
+  }
+
+  const records = brands.filter((b): b is Record<string, unknown> => !!b && typeof b === 'object');
+  const withIds = records.filter((b) => brandRecordId(b));
+  if (!withIds.length) {
+    return { ok: false, message: 'No brands found in this Bloom account.' };
+  }
+
+  const nh = normalizeBrandQuery(hintIn);
+  const exact = withIds.filter((b) => normalizeBrandQuery(brandRecordName(b)) === nh);
+  if (exact.length === 1) {
+    const brand = exact[0]!;
+    const id = brandRecordId(brand);
+    const name = brandRecordName(brand);
+    const sessionId = resolveBrandSessionId(brand);
+    return { ok: true, id, name, sessionId };
+  }
+  if (exact.length > 1) {
+    const lines = exact.slice(0, 8).map((b) => `• ${brandRecordName(b)} (\`${brandRecordId(b)}\`)`);
+    return {
+      ok: false,
+      message: `Several brands matched "${hintIn}". Reply with the exact ID:\n${lines.join('\n')}`,
+    };
+  }
+
+  const partial = withIds.filter((b) => {
+    const n = normalizeBrandQuery(brandRecordName(b));
+    return n.includes(nh) || nh.includes(n);
+  });
+  if (partial.length === 1) {
+    const brand = partial[0]!;
+    const id = brandRecordId(brand);
+    const name = brandRecordName(brand);
+    const sessionId = resolveBrandSessionId(brand);
+    return { ok: true, id, name, sessionId };
+  }
+  if (partial.length > 1) {
+    const lines = partial.slice(0, 8).map((b) => `• ${brandRecordName(b)} (\`${brandRecordId(b)}\`)`);
+    return {
+      ok: false,
+      message: `Several brands matched "${hintIn}". Reply with the exact ID:\n${lines.join('\n')}`,
+    };
+  }
+
+  return {
+    ok: false,
+    message:
+      `No brand matched "${hintIn}". Ask me to *list brands* or run \`/bloom-gen brands\` to see IDs.`,
+  };
+}
+
 export async function generateImages(
   apiKey: string,
   brandSessionId: string,

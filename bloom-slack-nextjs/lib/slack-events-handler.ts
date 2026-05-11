@@ -11,6 +11,7 @@ import {
   upsertPromptTemplate,
 } from './db';
 import {
+  formatSlackBrandsList,
   getBrand,
   getCredits,
   getImage,
@@ -249,23 +250,13 @@ async function handleSlashCommand(payload: {
   if (parsed.action === 'brands') {
     try {
       const brands = await listBrands(config.bloom_api_key);
-      const lines = brands
-        .filter((item) => !!item && typeof item === 'object')
-        .slice(0, 20)
-        .map((item) => {
-          const brand = item as Record<string, unknown>;
-          const id = String(brand.id ?? brand.brandId ?? brand.brand_id ?? '');
-          const name = String(brand.name ?? brand.brandName ?? brand.brand_name ?? 'Unknown');
-          return `• ${name} (\`${id || 'N/A'}\`)`;
-        });
+      const body = formatSlackBrandsList(brands, config.brand_id);
       return await postCommandResponse(
         config.bot_token,
         channelId,
         userId,
         text,
-        lines.length
-          ? `*Available Bloom Brands (${lines.length})*\n${lines.join('\n')}`
-          : 'No brands found in your Bloom account.',
+        body,
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unable to list brands';

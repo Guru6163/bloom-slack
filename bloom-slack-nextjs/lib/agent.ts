@@ -2,7 +2,16 @@ const OPENAI_BASE = 'https://api.openai.com/v1';
 
 export interface AgentDecision {
   message: string;
-  action: 'none' | 'clarify' | 'generate' | 'generate_multiple' | 'switch_brand' | 'list_images' | 'credits';
+  action:
+    | 'none'
+    | 'clarify'
+    | 'generate'
+    | 'generate_multiple'
+    | 'switch_brand'
+    | 'list_brands'
+    | 'select_brand'
+    | 'list_images'
+    | 'credits';
   generations: {
     prompt: string;
     aspect_ratio: string;
@@ -11,6 +20,10 @@ export interface AgentDecision {
     label: string;
   }[];
   list_images_limit?: number;
+  /** When action is select_brand: Bloom brand UUID or similar from user message. */
+  target_brand_id?: string;
+  /** When action is select_brand: human-readable brand name to match (e.g. "Acme"). */
+  target_brand_name?: string;
 }
 
 function buildSystemPrompt(
@@ -48,10 +61,24 @@ PROMPT WRITING:
 - Reference brand colors and style naturally
 - Keep each prompt under 80 words
 
-BRAND SWITCHING:
-If user says anything like "switch brand", "change brand", "use different brand":
+BRAND — LIST (Bloom API):
+If the user asks to list brands, "what brands", "show brands", "which brand is connected", or similar:
+- Set action to "list_brands"
+- Set generations to []
+- Set message to a short intro — the app will append the live brand directory (marks the workspace's current brand).
+
+BRAND — SWITCH IN CHAT (Bloom API):
+If the user wants a *different* brand and names it or gives an ID (e.g. "switch to Acme", "use brand \`uuid\`", "change brand to …"):
+- Set action to "select_brand"
+- Set generations to []
+- Set "target_brand_id" to the UUID if they pasted or clearly gave an ID; otherwise omit
+- Set "target_brand_name" to the brand name they asked for (strip filler words like "please"); omit if they only gave an ID
+- Set message to a short acknowledgment — the app will confirm after updating the workspace
+
+BRAND — UNCLEAR SWITCH:
+If they want to change brand but give no target (e.g. "switch brand", "change brand", "use different brand" with no name/ID):
 - Set action to "switch_brand"
-- Set message to ask which brand or confirm the switch
+- Set message: suggest they say e.g. "switch to _BrandName_" or paste a brand ID, or ask you to list brands
 
 LIST / SHOW IMAGES (Bloom API — you do NOT have images in chat memory):
 If the user asks to see recent images, gallery, thumbnails, "what did we generate", "show my generations", "list images", or similar:
@@ -74,17 +101,18 @@ Campaign history: ${JSON.stringify(campaignContext)}
 RESPONSE FORMAT — return ONLY valid JSON, no markdown:
 {
   "message": "your reply in Slack markdown (*bold*, _italic_, bullet points)",
-  "action": "none | clarify | generate | generate_multiple | switch_brand | list_images | credits",
+  "action": "none | clarify | generate | generate_multiple | switch_brand | list_brands | select_brand | list_images | credits",
   "generations": []
 }
 
+For action "select_brand" only: include top-level string fields "target_brand_id" and/or "target_brand_name" when the user gave an ID or name (omit both keys for other actions).
 For action "generate": generations must be one object with prompt, aspect_ratio, variants, platform, label.
 For action "generate_multiple": generations must be 2–6 such objects.
 For action "list_images": generations must be [] and you may set "list_images_limit" (integer 5–25, optional).
-For action "credits": generations must be [].
+For action "credits" or "list_brands" or "select_brand": generations must be [].
 
 Rules:
-- action "none" or "clarify" or "list_images" or "switch_brand" or "credits": generations must be []
+- action "none" or "clarify" or "list_images" or "switch_brand" or "list_brands" or "select_brand" or "credits": generations must be []
 - action "generate": generations has exactly 1 item
 - action "generate_multiple": generations has 2-6 items, one per platform
 - NEVER include anything outside the JSON object`;
@@ -128,7 +156,17 @@ export async function runAgent(
     const parsed = JSON.parse(text) as AgentDecision;
     if (!parsed.action) parsed.action = 'none';
     if (!parsed.generations) parsed.generations = [];
-    const allowed = new Set(['none', 'clarify', 'generate', 'generate_multiple', 'switch_brand', 'list_images', 'credits']);
+    const allowed = new Set([
+      'none',
+      'clarify',
+      'generate',
+      'generate_multiple',
+      'switch_brand',
+      'list_brands',
+      'select_brand',
+      'list_images',
+      'credits',
+    ]);
     if (!allowed.has(parsed.action)) parsed.action = 'none';
     return parsed;
   } catch {

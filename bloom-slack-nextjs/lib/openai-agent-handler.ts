@@ -1,6 +1,6 @@
 import { createSupabaseAdmin } from './supabase-admin';
 import { runAgent } from './agent';
-import { getCredits, getImageUrl, listImages } from './bloom';
+import { formatSlackBrandsList, getCredits, getImageUrl, listBrands, listImages, pickBrandForWorkspace } from './bloom';
 import {
   createJob,
   generateSetupToken,
@@ -8,6 +8,7 @@ import {
   getOrCreateConversation,
   getWorkspaceConfig,
   saveMessage,
+  saveWorkspaceConfig,
   updateCampaignContext,
   updateJob,
 } from './db';
@@ -116,9 +117,12 @@ export async function handleOpenAiAgentRequest(body: {
     );
 
     if (decision.action === 'switch_brand') {
-      await saveMessage(supabase, String(conversation.id), 'assistant', decision.message);
       const token = await generateSetupToken(supabase, teamId);
       const setupUrl = `${baseUrl}/api/slack/setup?token=${token}`;
+      const tip =
+        '\n\n_Switch from chat:_ mention a brand name ("switch to …") or paste a brand ID. _Commands:_ `/bloom-gen brands` · `/bloom-gen setup`';
+      const body = `🌸 ${decision.message}${tip}`;
+      await saveMessage(supabase, String(conversation.id), 'assistant', body.slice(0, 8000));
       await slackApi('chat.postMessage', config.bot_token, {
         channel: channelId,
         thread_ts: replyThreadTs,
@@ -126,7 +130,7 @@ export async function handleOpenAiAgentRequest(body: {
         blocks: [
           {
             type: 'section',
-            text: { type: 'mrkdwn', text: `🌸 ${decision.message}` },
+            text: { type: 'mrkdwn', text: truncateSlackMrkdwn(body, 2800) },
           },
           {
             type: 'actions',
@@ -139,6 +143,96 @@ export async function handleOpenAiAgentRequest(body: {
           },
         ],
       });
+      return new Response('OK', { status: 200 });
+    }
+
+    if (decision.action === 'list_brands') {
+      try {
+        const brands = await listBrands(config.bloom_api_key);
+        const listMd = formatSlackBrandsList(brands, config.brand_id);
+        const intro = decision.message?.trim() || '🌸 Brands on your Bloom account:';
+        const combined = `${intro}\n\n${listMd}`;
+        await saveMessage(supabase, String(conversation.id), 'assistant', combined.slice(0, 8000));
+        await slackApi('chat.postMessage', config.bot_token, {
+          channel: channelId,
+          thread_ts: replyThreadTs,
+          text: 'Bloom — brands',
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: truncateSlackMrkdwn(combined, 2800) },
+          }],
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unable to list brands';
+        await saveMessage(supabase, String(conversation.id), 'assistant', `❌ ${message}`);
+        await slackApi('chat.postMessage', config.bot_token, {
+          channel: channelId,
+          thread_ts: replyThreadTs,
+          text: 'Bloom — brands error',
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: `❌ ${message}` },
+          }],
+        });
+      }
+      return new Response('OK', { status: 200 });
+    }
+
+    if (decision.action === 'select_brand') {
+      try {
+        const tid = String(decision.target_brand_id ?? '').trim();
+        const tname = String(decision.target_brand_name ?? '').trim();
+        const picked = await pickBrandForWorkspace(config.bloom_api_key, {
+          brandId: tid || undefined,
+          brandNameHint: tname || undefined,
+        });
+        if (!picked.ok) {
+          const combined = `❌ ${picked.message}`;
+          await saveMessage(supabase, String(conversation.id), 'assistant', combined.slice(0, 8000));
+          await slackApi('chat.postMessage', config.bot_token, {
+            channel: channelId,
+            thread_ts: replyThreadTs,
+            text: 'Bloom — brand switch',
+            blocks: [{
+              type: 'section',
+              text: { type: 'mrkdwn', text: truncateSlackMrkdwn(combined, 2800) },
+            }],
+          });
+        } else {
+          await saveWorkspaceConfig({
+            team_id: teamId,
+            brand_id: picked.id,
+            ...(picked.name ? { brand_name: picked.name } : {}),
+            ...(picked.sessionId ? { brand_session_id: picked.sessionId } : {}),
+            setup_completed: true,
+          });
+          const confirm = `✅ *Workspace brand updated*\n*Brand:* ${picked.name}\n*Brand ID:* \`${picked.id}\``;
+          const intro = decision.message?.trim();
+          const combined = intro ? `${intro}\n\n${confirm}` : `🌸 ${confirm}`;
+          await saveMessage(supabase, String(conversation.id), 'assistant', combined.slice(0, 8000));
+          await slackApi('chat.postMessage', config.bot_token, {
+            channel: channelId,
+            thread_ts: replyThreadTs,
+            text: 'Bloom — brand updated',
+            blocks: [{
+              type: 'section',
+              text: { type: 'mrkdwn', text: truncateSlackMrkdwn(combined, 2800) },
+            }],
+          });
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Unable to update brand';
+        await saveMessage(supabase, String(conversation.id), 'assistant', `❌ ${message}`);
+        await slackApi('chat.postMessage', config.bot_token, {
+          channel: channelId,
+          thread_ts: replyThreadTs,
+          text: 'Bloom — brand error',
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: `❌ ${message}` },
+          }],
+        });
+      }
       return new Response('OK', { status: 200 });
     }
 

@@ -313,7 +313,7 @@ export function buildHelpBlocks(): unknown[] {
       text: {
         type: 'mrkdwn',
         text:
-          '*Ratios:* `1:1` `16:9` `9:16` `4:5` `square` `landscape` `portrait` `story`\n\n*Examples:*\n`/bloom-gen generate summer sale hero 16:9`\n`/bloom-gen brands`\n`/bloom-gen images 10`\n`/bloom-gen image 123e4567-e89b-12d3-a456-426614174000`\n`/bloom-gen credits`',
+          '*Ratios:* `1:1` `16:9` `9:16` `4:5` `square` `landscape` `portrait` `story`\n\n*Examples:*\n`/bloom-gen generate summer sale hero 16:9`\n`/bloom-gen brands`\n`/bloom-gen images 10`\n`/bloom-gen image 123e4567-e89b-12d3-a456-426614174000`\n`/bloom-gen credits`\n\n*@Bloom in chat:* ask to *list brands*, say *switch to* _BrandName_ (or paste a brand ID), check credits, or list recent images.',
       },
     },
   ];
