@@ -7,6 +7,8 @@ export interface ParsedCommand {
   variants: number;
   setupApiKey?: string;
   setupBrandId?: string;
+  /** Bloom brand UUID from trailing `--brand <id>` on generate. */
+  generateBrandId?: string;
   entityId?: string;
   limit?: number;
 }
@@ -75,6 +77,13 @@ export function parseCommand(text: string): ParsedCommand {
     promptText = promptText.slice(9);
   }
 
+  let generateBrandId: string | undefined;
+  const brandFlag = promptText.match(/\s+--brand\s+(\S+)\s*$/i);
+  if (brandFlag) {
+    generateBrandId = brandFlag[1]!.trim();
+    promptText = promptText.slice(0, brandFlag.index).trim();
+  }
+
   let aspectRatio = '16:9';
   const words = promptText.split(/\s+/).filter(Boolean);
   const lastWord = words.length > 0 ? words[words.length - 1].toLowerCase() : '';
@@ -83,7 +92,13 @@ export function parseCommand(text: string): ParsedCommand {
     promptText = words.slice(0, -1).join(' ');
   }
 
-  return { action: 'generate', prompt: promptText.trim(), aspectRatio, variants: 2 };
+  return {
+    action: 'generate',
+    prompt: promptText.trim(),
+    aspectRatio,
+    variants: 2,
+    ...(generateBrandId ? { generateBrandId } : {}),
+  };
 }
 
 export async function verifySlackSignature(req: Request, body: string): Promise<boolean> {

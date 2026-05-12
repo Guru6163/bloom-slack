@@ -37,8 +37,8 @@ function buildSuccessHTML(setupUrl: string, teamName: string): string {
   <div class="card">
     <div class="emoji">🌸</div>
     <h1>Bloom installed for ${escapeHtml(teamName)}!</h1>
-    <p>Check your Slack DMs for a setup link, or click below to configure your brand now.</p>
-    <a href="${escapeHtml(setupUrl)}" class="btn">Set up your brand →</a>
+    <p>Check your Slack DMs for a setup link, or click below to connect your Bloom API key.</p>
+    <a href="${escapeHtml(setupUrl)}" class="btn">Connect Bloom →</a>
     <p class="note">You'll need your Bloom API key from trybloom.ai/developers</p>
   </div>
 </body>
@@ -172,8 +172,8 @@ export async function handleSlackOAuth(requestUrl: string): Promise<Response> {
       if (dmData.ok && dmData.channel?.id) {
         const isReinstall = ex?.setup_completed;
         const message = isReinstall
-          ? `🌸 *Bloom reinstalled!* Your brand config is still active. You can update your brand anytime: ${setupUrl}`
-          : `🌸 *Welcome to Bloom!*\n\nYou're one step away from generating on-brand images in Slack.\n\n*Set up your brand here:*\n${setupUrl}\n\nTakes 2 minutes. You'll need your Bloom API key from trybloom.ai/developers`;
+          ? `🌸 *Bloom reinstalled!* Your Bloom API key is still saved if you had connected before. Update it here: ${setupUrl}`
+          : `🌸 *Welcome to Bloom!*\n\nConnect your Bloom API key to generate images in Slack:\n${setupUrl}\n\nGet your key at trybloom.ai/developers`;
 
         await fetch('https://slack.com/api/chat.postMessage', {
           method: 'POST',

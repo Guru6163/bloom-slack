@@ -129,7 +129,7 @@ export async function pickBrandForWorkspace(
   if (!hintIn) {
     return {
       ok: false,
-      message: 'Please specify a brand ID or name (e.g. "switch to Acme" or paste a brand ID).',
+      message: 'Please specify a Bloom brand ID or name (see `/bloom-gen brands`).',
     };
   }
 

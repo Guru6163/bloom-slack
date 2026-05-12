@@ -4,9 +4,6 @@ export async function POST(req: Request) {
   const body = (await req.json()) as {
     token?: string;
     bloom_api_key?: string | null;
-    brand_id?: string;
-    brand_name?: string;
-    brand_session_id?: string;
   };
 
   const supabase = createSupabaseAdmin();
@@ -22,19 +19,20 @@ export async function POST(req: Request) {
 
   const workspace = row as Record<string, unknown>;
 
-  const updateData: Record<string, unknown> = {
-    brand_id: body.brand_id,
-    brand_name: body.brand_name,
-    brand_session_id: body.brand_session_id,
-    setup_completed: true,
-    updated_at: new Date().toISOString(),
-  };
-
-  if (body.bloom_api_key) updateData.bloom_api_key = body.bloom_api_key;
+  if (!body.bloom_api_key?.trim()) {
+    return Response.json({ success: false, error: 'Bloom API key is required' }, { status: 400 });
+  }
 
   await supabase
     .from('workspace_configs')
-    .update(updateData)
+    .update({
+      bloom_api_key: body.bloom_api_key.trim(),
+      brand_id: '',
+      brand_name: '',
+      brand_session_id: '',
+      setup_completed: true,
+      updated_at: new Date().toISOString(),
+    })
     .eq('team_id', workspace.team_id as string);
 
   const installedBy = workspace.installed_by as string | undefined;
@@ -58,7 +56,11 @@ export async function POST(req: Request) {
         },
         body: JSON.stringify({
           channel: dmData.channel.id,
-          text: `🌸 *Bloom is ready!* Brand set to *${body.brand_name}*.\n\nMention @Bloom in any channel to start generating on-brand images.\n\nTry: "@Bloom create a summer sale banner for Instagram"`,
+          text:
+            '🌸 *Bloom is ready!* Your Slack workspace is connected.\n\n' +
+            'Mention @Bloom with which brand to use (name or ID), or run ' +
+            '`/bloom-gen generate … --brand <brand_uuid>`.\n\n' +
+            'Try: "@Bloom for _BrandName_: hero image for LinkedIn, 16:9"',
         }),
       });
     }

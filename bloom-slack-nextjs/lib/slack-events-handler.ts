@@ -19,6 +19,7 @@ import {
   listBrands,
   listImages,
   listWorkspaces,
+  pickBrandForWorkspace,
   resolveBrandSessionId,
   validateKey,
 } from './bloom';
@@ -106,15 +107,13 @@ async function handleSlashCommand(payload: {
 
   if (parsed.action === 'setup') {
     const apiKey = parsed.setupApiKey || '';
-    const requestedBrandId = parsed.setupBrandId || '';
-
     if (!apiKey) {
       return slackResponse({
         response_type: 'ephemeral',
         text:
           'To connect Bloom for this workspace, run:\n' +
-          '`/bloom-gen setup <bloom_api_key> [brand_id]`\n\n' +
-          'If `brand_id` is omitted, the first brand from your Bloom account is used.\n\n' +
+          '`/bloom-gen setup <bloom_api_key>`\n\n' +
+          'Your API key unlocks all brands on the account. Pick a brand per generation (in chat or with `--brand` on `/bloom-gen generate`).\n\n' +
           'Or use the web setup link from your install DM.',
       });
     }
@@ -127,67 +126,22 @@ async function handleSlashCommand(payload: {
       });
     }
 
-    let selectedBrand: Record<string, unknown> | null = null;
-    if (requestedBrandId) {
-      try {
-        const brandResponse = await getBrand(apiKey, requestedBrandId);
-        selectedBrand = brandResponse && typeof brandResponse === 'object'
-          ? brandResponse as Record<string, unknown>
-          : null;
-      } catch {
-        selectedBrand = null;
-      }
-      if (!selectedBrand) {
-        return slackResponse({
-          response_type: 'ephemeral',
-          text: `❌ Brand not found for ID \`${requestedBrandId}\`. Try without a brand ID to use your default brand.`,
-        });
-      }
-    } else {
-      const brands = await listBrands(apiKey);
-      selectedBrand = brands.find((item) => !!item && typeof item === 'object') as Record<string, unknown> | undefined ||
-        null;
-      if (!selectedBrand) {
-        return slackResponse({
-          response_type: 'ephemeral',
-          text: '❌ No brands found in this Bloom account. Please create a brand in Bloom first.',
-        });
-      }
-    }
-
-    const brandId = String(
-      selectedBrand.id ??
-        selectedBrand.brandId ??
-        selectedBrand.brand_id ??
-        requestedBrandId ??
-        '',
-    );
-    const brandName = String(selectedBrand.name ?? selectedBrand.brandName ?? selectedBrand.brand_name ?? '');
-    const brandSessionId = resolveBrandSessionId(selectedBrand);
-
-    if (!brandId) {
-      return slackResponse({
-        response_type: 'ephemeral',
-        text: '❌ Could not resolve a usable brand ID from Bloom. Please try another brand.',
-      });
-    }
-
     await saveWorkspaceConfig({
       team_id: teamId,
       bloom_api_key: apiKey,
-      brand_id: brandId,
-      ...(brandName ? { brand_name: brandName } : {}),
-      ...(brandSessionId ? { brand_session_id: brandSessionId } : {}),
+      brand_id: '',
+      brand_name: '',
+      brand_session_id: '',
       setup_completed: true,
     });
 
     return slackResponse({
       response_type: 'ephemeral',
       text:
-        '✅ Bloom connected for this workspace.\n' +
-        `*Brand:* ${brandName || 'Unknown'}\n` +
-        `*Brand ID:* \`${brandId}\`\n\n` +
-        'You can now run `/bloom-gen generate <prompt> [ratio]` or mention @Bloom in a channel.',
+        '✅ Bloom connected for this workspace.\n\n' +
+        'Mention @Bloom with which brand to use, or run:\n' +
+        '`/bloom-gen generate <prompt> <ratio> --brand <brand_uuid>`\n\n' +
+        'Use `/bloom-gen brands` to list brand IDs.',
     });
   }
 
@@ -225,32 +179,19 @@ async function handleSlashCommand(payload: {
       }
     }
 
-    const supabase = createSupabaseAdmin();
-    const token = await generateSetupToken(supabase, teamId);
-    const setupUrl = `${baseUrl}/api/slack/setup?token=${token}`;
-    return slackResponse({
-      response_type: 'ephemeral',
-      blocks: [{
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Current brand:* ${config.brand_name || 'Not set'}\n\n*Tip:* Mention @Bloom in any channel to generate images with natural language!`,
-        },
-      }, {
-        type: 'actions',
-        elements: [{
-          type: 'button',
-          text: { type: 'plain_text', text: '🔄 Change Brand' },
-          url: setupUrl,
-        }],
-      }],
-    });
+    return await postCommandResponse(
+      config.bot_token,
+      channelId,
+      userId,
+      text,
+      'This workspace does not store a default brand. Use `/bloom-gen brands` for IDs, `/bloom-gen brand <id>` to inspect a brand, or mention @Bloom with a brand name when generating.',
+    );
   }
 
   if (parsed.action === 'brands') {
     try {
       const brands = await listBrands(config.bloom_api_key);
-      const body = formatSlackBrandsList(brands, config.brand_id);
+      const body = formatSlackBrandsList(brands);
       return await postCommandResponse(
         config.bot_token,
         channelId,
@@ -367,7 +308,29 @@ async function handleSlashCommand(payload: {
     if (!parsed.prompt) {
       return slackResponse({
         response_type: 'ephemeral',
-        text: '❌ Please add a prompt. Example: `/bloom-gen generate summer sale hero 16:9`\n\nOr mention @Bloom and describe what you need!',
+        text:
+          '❌ Please add a prompt. Example:\n' +
+          '`/bloom-gen generate summer sale hero 16:9 --brand <your_bloom_brand_uuid>`\n\n' +
+          'Use `/bloom-gen brands` to list brand IDs, or mention @Bloom in a channel.',
+      });
+    }
+
+    const brandUuid = String(parsed.generateBrandId ?? '').trim();
+    if (!brandUuid) {
+      return slackResponse({
+        response_type: 'ephemeral',
+        text:
+          '❌ Add `--brand` with a Bloom brand UUID. Example:\n' +
+          '`/bloom-gen generate summer sale hero 16:9 --brand 123e4567-e89b-12d3-a456-426614174000`\n\n' +
+          'Run `/bloom-gen brands` to list IDs.',
+      });
+    }
+
+    const picked = await pickBrandForWorkspace(config.bloom_api_key, { brandId: brandUuid });
+    if (!picked.ok) {
+      return slackResponse({
+        response_type: 'ephemeral',
+        text: `❌ ${picked.message}`,
       });
     }
 
@@ -385,14 +348,15 @@ async function handleSlashCommand(payload: {
       prompt: parsed.prompt,
       aspect_ratio: parsed.aspectRatio,
       variants: parsed.variants,
-      brand_id: config.brand_id,
+      brand_id: picked.id,
+      ...(picked.name ? { brand_name: picked.name } : {}),
       thread_ts: threadTs ?? null,
     });
 
     await updateJob(jobId, { message_ts: String(loadingMsg.ts ?? ''), status: 'generating' });
     await upsertPromptTemplate({
       team_id: teamId,
-      brand_id: config.brand_id,
+      brand_id: picked.id,
       prompt: parsed.prompt,
       aspect_ratio: parsed.aspectRatio,
       variants: parsed.variants,

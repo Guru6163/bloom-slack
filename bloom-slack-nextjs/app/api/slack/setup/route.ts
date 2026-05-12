@@ -16,10 +16,7 @@ export async function GET(req: Request) {
     return new Response('Invalid or expired setup link', { status: 404 });
   }
 
-  const isChangingBrandOnly = Boolean(
-    workspace.setup_completed && String(workspace.bloom_api_key ?? '').trim(),
-  );
-  const html = buildSetupHtml(token, workspace, isChangingBrandOnly, getAppBaseUrl());
+  const html = buildSetupHtml(token, workspace, getAppBaseUrl());
   return new Response(html, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' },
   });

@@ -1,4 +1,3 @@
-import type { WorkspaceConfig } from './db';
 import {
   getJob,
   getVariantPositionBias,
@@ -48,20 +47,12 @@ function resolveIntentInstruction(intent: string, prompt: string): string {
 async function resolveJobBloomBrand(
   apiKey: string,
   job: Record<string, unknown>,
-  config: WorkspaceConfig,
 ): Promise<{ brandId: string; brandSessionId: string; displayName: string }> {
-  const configBrandId = String(config.brand_id ?? '').trim();
   const jobBrandId = String(job.brand_id ?? '').trim();
-
-  if (!jobBrandId || jobBrandId === configBrandId) {
-    const brandSessionId = String(config.brand_session_id || config.brand_id || '').trim();
-    if (!brandSessionId) {
-      throw new Error(
-        'Workspace Bloom brand is not fully configured (missing session). Ask an admin to run `/bloom-gen setup`.',
-      );
-    }
-    const displayName = String(config.brand_name ?? '').trim() || 'Bloom';
-    return { brandId: configBrandId || jobBrandId, brandSessionId, displayName };
+  if (!jobBrandId) {
+    throw new Error(
+      'This generation job has no Bloom brand ID. Start a new generation with an explicit brand.',
+    );
   }
 
   const raw = await getBrand(apiKey, jobBrandId);
@@ -145,7 +136,6 @@ export async function handleRunGenerationRequest(body: {
     const { brandId, brandSessionId, displayName } = await resolveJobBloomBrand(
       bloomApiKey,
       job as Record<string, unknown>,
-      config,
     );
 
     let progressTs = liveMessageTs;

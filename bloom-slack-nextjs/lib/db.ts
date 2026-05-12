@@ -5,7 +5,8 @@ export interface WorkspaceConfig {
   team_id: string;
   team_name?: string;
   bloom_api_key: string;
-  brand_id: string;
+  /** Legacy: no longer used as a workspace default; may be empty. */
+  brand_id?: string;
   brand_name?: string;
   brand_session_id?: string;
   bot_token: string;
