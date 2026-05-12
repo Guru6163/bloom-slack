@@ -627,14 +627,6 @@ export async function handleSlackEventsPost(
           );
 
           if (conversation) {
-            const config = await getWorkspaceConfig(teamId);
-            const botUserId = String(config?.bot_user_id ?? '').trim();
-            const text = String(event.text ?? '');
-            const mentionsBloom = botUserId && text.includes(`<@${botUserId}>`);
-            if (!mentionsBloom) {
-              return ackResponse;
-            }
-
             scheduleBackgroundFetch('openai-agent', `${baseUrl}/api/internal/openai-agent`, {
               method: 'POST',
               headers: {

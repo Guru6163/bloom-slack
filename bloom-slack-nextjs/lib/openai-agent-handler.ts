@@ -109,12 +109,40 @@ export async function handleOpenAiAgentRequest(body: {
 
     const messagesForModel = [...history, { role: 'user', content: cleanText }];
 
+    const threadTsStr = threadTs != null ? String(threadTs).trim() : '';
+    const messageTsStr = String(messageTs ?? '').trim();
+    const isThreadFollowUp = Boolean(threadTsStr && messageTsStr && threadTsStr !== messageTsStr);
+
+    const campaign = (conversation.campaign_context as Record<string, unknown>) || {};
+    const modelCampaignContext: Record<string, unknown> = {
+      ...campaign,
+      ...(isThreadFollowUp ? { _slack_thread_follow_up: true } : {}),
+    };
+
     const decision = await runAgent(
       messagesForModel,
       config.brand_name || 'your brand',
       String(config.brand_session_id || config.brand_id || ''),
-      (conversation.campaign_context as Record<string, unknown>) || {},
+      modelCampaignContext,
     );
+
+    if (decision.action === 'stand_down') {
+      const note = String(decision.message ?? '').trim();
+      if (note) {
+        const body = `🌸 ${note}`;
+        await saveMessage(supabase, String(conversation.id), 'assistant', body.slice(0, 8000));
+        await slackApi('chat.postMessage', config.bot_token, {
+          channel: channelId,
+          thread_ts: replyThreadTs,
+          text: 'Bloom',
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: truncateSlackMrkdwn(body, 2800) },
+          }],
+        });
+      }
+      return new Response('OK', { status: 200 });
+    }
 
     if (decision.action === 'switch_brand') {
       const token = await generateSetupToken(supabase, teamId);
