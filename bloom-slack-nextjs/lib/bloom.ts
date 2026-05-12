@@ -196,7 +196,6 @@ export async function generateImages(
   aspectRatio: string,
   variants: number,
 ): Promise<string[]> {
-  const referenceImageIds = await pickReferenceImageIds(apiKey, brandSessionId);
   const data = await fetchBloom('/images/generations', apiKey, {
     method: 'POST',
     body: JSON.stringify({
@@ -206,7 +205,6 @@ export async function generateImages(
       imageSize: '2K',
       model: 'fast',
       variantCount: variants,
-      referenceImageIds,
     }),
   }) as { data?: { ids?: unknown } };
   const ids = data?.data?.ids;
@@ -304,72 +302,6 @@ export async function getCredits(apiKey: string): Promise<{ balance: number | nu
 export async function listWorkspaces(apiKey: string): Promise<unknown[]> {
   const data = await fetchBloom('/workspaces', apiKey) as Record<string, unknown>;
   return extractCollection(data, 'workspaces');
-}
-
-async function listImagesByQuery(
-  apiKey: string,
-  params: URLSearchParams,
-  throwOnInvalid = false,
-): Promise<unknown[]> {
-  const data = await fetchBloom(`/images?${params.toString()}`, apiKey) as Record<string, unknown>;
-  const images = extractCollection(data, 'images');
-  if (images.length > 0) return images;
-  if (throwOnInvalid) throw new Error('Invalid images response');
-  return [];
-}
-
-async function pickReferenceImageIds(apiKey: string, brandSessionId: string): Promise<string[]> {
-  const limit = 25;
-  const baseParams = new URLSearchParams({
-    limit: String(limit),
-    includeUrls: 'false',
-  });
-
-  const scopedCandidates = await firstNonEmptyImageSet(apiKey, baseParams, brandSessionId);
-
-  const candidates = scopedCandidates.length > 0
-    ? scopedCandidates
-    : await listImagesByQuery(apiKey, baseParams);
-
-  const sorted = candidates
-    .map((image) => image as Record<string, unknown>)
-    .map((image) => ({
-      id: resolveImageId(image),
-      createdAt: resolveCreatedAt(image),
-    }))
-    .filter((row): row is { id: string; createdAt: number } => Boolean(row.id))
-    .sort((a, b) => b.createdAt - a.createdAt);
-
-  return Array.from(new Set(sorted.map((row) => row.id))).slice(0, 3);
-}
-
-async function firstNonEmptyImageSet(
-  apiKey: string,
-  baseParams: URLSearchParams,
-  brandSessionId: string,
-): Promise<unknown[]> {
-  const scopedKeys = ['brandSessionId', 'brand_session_id', 'sessionId'];
-  for (const key of scopedKeys) {
-    const images = await listImagesByQuery(apiKey, withParam(baseParams, key, brandSessionId));
-    if (images.length > 0) return images;
-  }
-  return [];
-}
-
-function withParam(params: URLSearchParams, key: string, value: string): URLSearchParams {
-  const next = new URLSearchParams(params);
-  if (value) next.set(key, value);
-  return next;
-}
-
-function resolveImageId(image: Record<string, unknown>): string {
-  return String(image.id ?? image.imageId ?? '').trim();
-}
-
-function resolveCreatedAt(image: Record<string, unknown>): number {
-  const raw = image.createdAt ?? image.created_at ?? image.updatedAt ?? image.updated_at;
-  const parsed = typeof raw === 'string' ? Date.parse(raw) : Number(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function extractCollection(payload: Record<string, unknown>, key: string): unknown[] {
