@@ -27,7 +27,7 @@ const AGENT_TOOLS: unknown[] = [
     function: {
       name: 'slack_reply',
       description:
-        'Send a short Slack reply for greetings, thanks, chit-chat, or a single clarifying question when you cannot call another tool yet.',
+        'Send a short Slack reply for greetings, thanks, positive/negative reactions to past output (e.g. "this is good", "looks great", "perfect", "not quite"), chit-chat, or ONE clarifying question. Do NOT use this to queue new images.',
       parameters: {
         type: 'object',
         properties: {
@@ -151,7 +151,7 @@ const AGENT_TOOLS: unknown[] = [
     function: {
       name: 'bloom_schedule_generations',
       description:
-        'Queue one or more Bloom image generations. Use one item for a single image, 2–6 items for multiple platforms or brands. Per-item target_brand_* only when that image is for a non-default brand.',
+        'Queue NEW Bloom image jobs only when the user clearly asks for more/different/another/regenerated images or gives a new concrete visual brief. NEVER use for pure approval or reactions alone (e.g. "this is good", "thanks", "love it") — use slack_reply instead. Per-item target_brand_* only when that image is for a non-default brand.',
       parameters: {
         type: 'object',
         properties: {
@@ -227,7 +227,12 @@ PERSONALITY:
 WORKFLOW:
 1. User describes what they need
 2. If ONE critical thing is missing → slack_reply with that question
-3. When ready → bloom_schedule_generations
+3. When they clearly want NEW images (new brief, "again", "another", "more", "different", "regenerate", revised specs) → bloom_schedule_generations
+4. If they are only reacting, thanking, or approving recent images with NO ask for new work → slack_reply (thank them + offer ONE optional tweak) — do NOT call bloom_schedule_generations
+
+FEEDBACK WITHOUT NEW IMAGES:
+- Phrases like "this is good", "looks great", "perfect", "thanks", "love it", "nice", "awesome" with no new request = slack_reply only, never bloom_schedule_generations.
+- If the same message mixes praise AND a new image ask, then schedule only what they newly asked for (or ask one slack_reply clarifying question if ambiguous).
 
 PLATFORM TO ASPECT RATIO:
 Instagram Feed → 1:1
@@ -268,7 +273,7 @@ If the user asks about credits, balance, quota:
 - Call bloom_get_credits
 
 GENERATION:
-When you have enough detail (or user deferred platform choice to you), call bloom_schedule_generations with intro_message and generations array (1 item = single generate; 2–6 = multiple).
+When the user clearly wants NEW image work (or repeats an explicit generate request), call bloom_schedule_generations with intro_message and generations array (1 item = single generate; 2–6 = multiple). Do not re-run the previous job just because they said they liked the result.
 
 CURRENT CONTEXT:
 Brand: ${brandName}
