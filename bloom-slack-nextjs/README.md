@@ -1,6 +1,6 @@
 # Bloom Slack (Next.js)
 
-Next.js implementation of the **Bloom** Slack app: OAuth install, Events API (`@Bloom`, thread replies), slash command `/bloom-gen`, interactive buttons, Bloom image generation, and OpenAI-powered agent replies. Uses the same **Supabase Postgres** schema as the original Deno Edge Functions in this repo’s `supabase/` folder.
+Next.js implementation of the **Bloom** Slack app: OAuth install, Events API (`@Bloom`, thread replies), slash command `/bloom-gen`, interactive buttons, Bloom image generation, and OpenAI-powered agent replies. Uses **Supabase Postgres** with the SQL migrations in this repo’s [`supabase/migrations`](../supabase/migrations) folder.
 
 ---
 
@@ -213,5 +213,4 @@ npm start
 
 ## Related
 
-- Original Edge Function sources: [`../supabase/functions`](../supabase/functions)
 - Database migrations: [`../supabase/migrations`](../supabase/migrations)
