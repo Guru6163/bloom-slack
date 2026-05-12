@@ -55,6 +55,8 @@ export async function createJob(job: {
   aspect_ratio: string;
   variants: number;
   brand_id?: string;
+  /** Display name for Slack (e.g. per-generation brand); optional. */
+  brand_name?: string;
   source_image_id?: string;
   intent?: string;
   thread_ts?: string | null;

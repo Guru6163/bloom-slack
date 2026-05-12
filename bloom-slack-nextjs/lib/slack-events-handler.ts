@@ -449,7 +449,7 @@ async function handleInteractiveAction(data: Record<string, unknown>): Promise<R
         job.image_urls,
         String(value.jobId),
         newIndex,
-        config.brand_name,
+        String((job as { brand_name?: string }).brand_name ?? config.brand_name ?? ''),
       ),
       threadTs,
     );

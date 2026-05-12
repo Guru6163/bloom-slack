@@ -18,6 +18,10 @@ export interface AgentDecision {
     variants: number;
     platform: string;
     label: string;
+    /** Bloom brand UUID for this image only (optional; default = workspace brand). */
+    target_brand_id?: string;
+    /** Bloom brand name hint for this image only (optional; default = workspace brand). */
+    target_brand_name?: string;
   }[];
   list_images_limit?: number;
   /** When action is select_brand: Bloom brand UUID or similar from user message. */
@@ -80,6 +84,14 @@ If they want to change brand but give no target (e.g. "switch brand", "change br
 - Set action to "switch_brand"
 - Set message: suggest they say e.g. "switch to _BrandName_" or paste a brand ID, or ask you to list brands
 
+BRAND — MULTIPLE BRANDS IN ONE REQUEST (generate / generate_multiple only):
+When the user wants images for *more than one* Bloom brand in a single reply (e.g. "one hero for Google and one for Bloom"):
+- Add optional "target_brand_id" (Bloom brand UUID) and/or "target_brand_name" on *each* generation object that is not for the workspace default brand.
+- Matching rules are the same as select_brand (ID preferred; name fuzzy-matched against their Bloom account).
+- Omit both "target_brand_id" and "target_brand_name" on a generation to use the workspace default brand (${brandName}).
+- If the whole request is for one brand only, omit both keys on every generation — do not force the user to switch workspace brand first.
+- Do not tell them to pick "one brand first" when they clearly asked for multiple brands in one go; use per-generation targets instead.
+
 LIST / SHOW IMAGES (Bloom API — you do NOT have images in chat memory):
 If the user asks to see recent images, gallery, thumbnails, "what did we generate", "show my generations", "list images", or similar:
 - Set action to "list_images"
@@ -106,8 +118,8 @@ RESPONSE FORMAT — return ONLY valid JSON, no markdown:
 }
 
 For action "select_brand" only: include top-level string fields "target_brand_id" and/or "target_brand_name" when the user gave an ID or name (omit both keys for other actions).
-For action "generate": generations must be one object with prompt, aspect_ratio, variants, platform, label.
-For action "generate_multiple": generations must be 2–6 such objects.
+For action "generate": generations must be one object with prompt, aspect_ratio, variants, platform, label, and optionally target_brand_id / target_brand_name for that single image.
+For action "generate_multiple": generations must be 2–6 such objects; each may optionally include target_brand_id / target_brand_name when that row is for a non-default brand.
 For action "list_images": generations must be [] and you may set "list_images_limit" (integer 5–25, optional).
 For action "credits" or "list_brands" or "select_brand": generations must be [].
 

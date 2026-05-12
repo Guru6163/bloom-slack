@@ -1,3 +1,4 @@
+import type { WorkspaceConfig } from './db';
 import {
   getJob,
   getVariantPositionBias,
@@ -5,7 +6,16 @@ import {
   updateJob,
   upsertPromptTemplate,
 } from './db';
-import { editImage, generateImages, getImageUrl, pollImagesUntilDone } from './bloom';
+import {
+  brandRecordId,
+  brandRecordName,
+  editImage,
+  generateImages,
+  getBrand,
+  getImageUrl,
+  pollImagesUntilDone,
+  resolveBrandSessionId,
+} from './bloom';
 import {
   buildErrorBlocks,
   buildProgressBlocks,
@@ -33,6 +43,41 @@ function resolveIntentInstruction(intent: string, prompt: string): string {
     holiday: 'Add a tasteful seasonal holiday mood with festive but brand-safe styling.',
   };
   return `${map[intent] ?? 'Refine this image while preserving the core composition.'} Prompt context: ${prompt}`;
+}
+
+async function resolveJobBloomBrand(
+  apiKey: string,
+  job: Record<string, unknown>,
+  config: WorkspaceConfig,
+): Promise<{ brandId: string; brandSessionId: string; displayName: string }> {
+  const configBrandId = String(config.brand_id ?? '').trim();
+  const jobBrandId = String(job.brand_id ?? '').trim();
+
+  if (!jobBrandId || jobBrandId === configBrandId) {
+    const brandSessionId = String(config.brand_session_id || config.brand_id || '').trim();
+    if (!brandSessionId) {
+      throw new Error(
+        'Workspace Bloom brand is not fully configured (missing session). Ask an admin to run `/bloom-gen setup`.',
+      );
+    }
+    const displayName = String(config.brand_name ?? '').trim() || 'Bloom';
+    return { brandId: configBrandId || jobBrandId, brandSessionId, displayName };
+  }
+
+  const raw = await getBrand(apiKey, jobBrandId);
+  const brand = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  if (!brand) throw new Error(`Bloom brand not found for this job (ID: \`${jobBrandId}\`).`);
+  const id = brandRecordId(brand) || jobBrandId;
+  const session = resolveBrandSessionId(brand).trim();
+  const brandSessionId = session || id;
+  if (!brandSessionId) {
+    throw new Error(`Could not resolve Bloom session for brand \`${jobBrandId}\`.`);
+  }
+  return {
+    brandId: id,
+    brandSessionId,
+    displayName: brandRecordName(brand),
+  };
 }
 
 function reorderByFeedbackBias(
@@ -83,7 +128,6 @@ export async function handleRunGenerationRequest(body: {
   const prompt = String(job.prompt ?? '');
   const messageTs = String(job.message_ts ?? '');
   const teamId = String(job.team_id ?? '');
-  const brandId = String(job.brand_id ?? config.brand_id ?? '');
   const userId = String(job.user_id ?? '');
   const channelId = String(job.channel_id ?? '');
   const aspectRatio = String(job.aspect_ratio ?? '16:9');
@@ -97,7 +141,12 @@ export async function handleRunGenerationRequest(body: {
   try {
     const bloomApiKey = config.bloom_api_key || '';
     if (!bloomApiKey) throw new Error('No Bloom API key configured');
-    const brandSessionId = config.brand_session_id || config.brand_id;
+
+    const { brandId, brandSessionId, displayName } = await resolveJobBloomBrand(
+      bloomApiKey,
+      job as Record<string, unknown>,
+      config,
+    );
 
     let progressTs = liveMessageTs;
     if (!progressTs) {
@@ -142,7 +191,12 @@ export async function handleRunGenerationRequest(body: {
       imageUrls = [...(((job.image_urls as string[] | null) ?? []))];
       imageIds[imageIndex] = editedIds[0];
       imageUrls[imageIndex] = firstUrl;
-      await updateJob(jobId, { image_ids: imageIds, image_urls: imageUrls, status: 'completed' });
+      await updateJob(jobId, {
+        image_ids: imageIds,
+        image_urls: imageUrls,
+        status: 'completed',
+        brand_name: displayName,
+      });
     } else {
       imageIds = await generateImages(
         bloomApiKey,
@@ -176,6 +230,7 @@ export async function handleRunGenerationRequest(body: {
         image_ids: imageIds,
         image_urls: imageUrls,
         completed_at: new Date().toISOString(),
+        brand_name: displayName,
       });
       await upsertPromptTemplate({
         team_id: teamId,
@@ -190,7 +245,7 @@ export async function handleRunGenerationRequest(body: {
       config.bot_token,
       channelId,
       progressTs,
-      buildResultBlocks(prompt, aspectRatio, imageUrls, jobId, 0, config.brand_name),
+      buildResultBlocks(prompt, aspectRatio, imageUrls, jobId, 0, displayName),
       slackThreadTs,
     );
 

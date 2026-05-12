@@ -330,6 +330,53 @@ export async function handleOpenAiAgentRequest(body: {
       const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
       for (const generation of decision.generations) {
+        const tid = String(generation.target_brand_id ?? '').trim();
+        const tname = String(generation.target_brand_name ?? '').trim();
+        let resolvedBrandId = String(config.brand_id ?? '').trim();
+        let resolvedBrandName = String(config.brand_name ?? '').trim();
+
+        if (tid || tname) {
+          const picked = await pickBrandForWorkspace(config.bloom_api_key, {
+            brandId: tid || undefined,
+            brandNameHint: tid ? undefined : (tname || undefined),
+          });
+          if (!picked.ok) {
+            await slackApi('chat.postMessage', config.bot_token, {
+              channel: channelId,
+              thread_ts: replyThreadTs,
+              text: 'Bloom',
+              blocks: [{
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: truncateSlackMrkdwn(`❌ *${generation.label}:* ${picked.message}`),
+                },
+              }],
+            });
+            continue;
+          }
+          resolvedBrandId = picked.id;
+          resolvedBrandName = picked.name;
+        } else if (!resolvedBrandId) {
+          await slackApi('chat.postMessage', config.bot_token, {
+            channel: channelId,
+            thread_ts: replyThreadTs,
+            text: 'Bloom',
+            blocks: [{
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: truncateSlackMrkdwn(
+                  `❌ *${generation.label}:* No Bloom brand is configured for this workspace. Ask an admin to run \`/bloom-gen setup\` or tell me which brand to use (name or ID).`,
+                ),
+              },
+            }],
+          });
+          continue;
+        }
+
+        const brandNote = (tid || tname) && resolvedBrandName ? ` · _${resolvedBrandName}_` : '';
+
         const loadingRes = await slackApi('chat.postMessage', config.bot_token, {
           channel: channelId,
           thread_ts: replyThreadTs,
@@ -338,7 +385,7 @@ export async function handleOpenAiAgentRequest(body: {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: `⏳ Generating *${generation.label}* (${generation.aspect_ratio})...`,
+              text: `⏳ Generating *${generation.label}* (${generation.aspect_ratio})${brandNote}...`,
             },
           }],
         });
@@ -352,7 +399,8 @@ export async function handleOpenAiAgentRequest(body: {
           prompt: generation.prompt,
           aspect_ratio: generation.aspect_ratio,
           variants: generation.variants || 2,
-          brand_id: config.brand_id,
+          brand_id: resolvedBrandId,
+          ...(resolvedBrandName ? { brand_name: resolvedBrandName } : {}),
           thread_ts: replyThreadTs,
         });
 
